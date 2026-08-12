@@ -606,7 +606,7 @@ def get_competition_schedule(competition: Competition) -> List[dict]:
 
 
 def sync_admin_status() -> None:
-    target_email = "123@123.com"
+    target_email = "jamie.clarke20@hotmail.co.uk"
     target_user = User.query.filter_by(email=target_email).first()
 
     if target_user is not None:
@@ -622,9 +622,9 @@ def sync_admin_status() -> None:
 
 def ensure_default_admin_account() -> None:
     default_name = "Jamie C"
-    default_email = "123@123.com"
-    default_phone = "0712345678"
-    default_password = "12345678"
+    default_email = "jamie.clarke20@hotmail.co.uk"
+    default_phone = "07469198329"
+    default_password = "charlton20"
 
     user = User.query.filter_by(email=default_email).first()
     if user is None:
