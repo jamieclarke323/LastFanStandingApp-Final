@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h1>Admin fixture results</h1>
+    {% for week in fixtures_by_week %}
+      <h2>Matchweek {{ week.matchweek }}</h2>
+      {% for fixture in week.fixtures %}
+        <div class="fixture-result-row">
+          <div class="result-buttons">
+            <form method="post" class="inline-form">
+              <input type="hidden" name="matchweek" value="{{ week.matchweek }}" />
+              <input type="hidden" name="home_team" value="{{ fixture.home_team }}" />
+              <input type="hidden" name="away_team" value="{{ fixture.away_team }}" />
+              <input type="hidden" name="result" value="home_win" />
+              <button type="submit" class="result-button{% if fixture.result == 'home_win' %} selected{% endif %}" data-result="home">{{ fixture.home_team }}</button>
+            </form>
+            <form method="post" class="inline-form">
+              <input type="hidden" name="matchweek" value="{{ week.matchweek }}" />
+              <input type="hidden" name="home_team" value="{{ fixture.home_team }}" />
+              <input type="hidden" name="away_team" value="{{ fixture.away_team }}" />
+              <input type="hidden" name="result" value="draw" />
+              <button type="submit" class="result-button{% if fixture.result == 'draw' %} selected{% endif %}" data-result="draw">Draw</button>
+            </form>
+            <form method="post" class="inline-form">
+              <input type="hidden" name="matchweek" value="{{ week.matchweek }}" />
+              <input type="hidden" name="home_team" value="{{ fixture.home_team }}" />
+              <input type="hidden" name="away_team" value="{{ fixture.away_team }}" />
+              <input type="hidden" name="result" value="away_win" />
+              <button type="submit" class="result-button{% if fixture.result == 'away_win' %} selected{% endif %}" data-result="away">{{ fixture.away_team }}</button>
+            </form>
+            <form method="post" class="inline-form">
+              <input type="hidden" name="matchweek" value="{{ week.matchweek }}" />
+              <input type="hidden" name="home_team" value="{{ fixture.home_team }}" />
+              <input type="hidden" name="away_team" value="{{ fixture.away_team }}" />
+              <input type="hidden" name="result" value="" />
+              <button type="submit" class="result-button secondary">Reset</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    {% endfor %}
+  </div>
+{% endblock %}

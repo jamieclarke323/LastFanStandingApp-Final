@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h1>Create competition</h1>
+    <form method="post">
+      <label>Name</label>
+      <input type="text" name="name" required />
+      <label>Competition code</label>
+      <input type="text" name="code" required />
+      <label>Start matchweek</label>
+      <input type="number" name="start_matchweek" min="1" max="6" value="1" required />
+      <button type="submit">Create competition</button>
+    </form>
+  </div>
+{% endblock %}

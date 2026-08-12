@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h1>{{ competition.name }}</h1>
+    <p><strong>Code:</strong> {{ competition.code }}</p>
+    <p><strong>Starting matchweek:</strong> {{ competition.start_matchweek }}</p>
+    <a class="button" href="{{ url_for('submit_pick', competition_id=competition.id, matchweek=competition.start_matchweek) }}">Submit pick</a>
+    <a class="button secondary" href="{{ url_for('view_selections', competition_id=competition.id, matchweek=competition.start_matchweek) }}">View selections</a>
+    {% if can_manage_players %}
+      <a class="button secondary" href="{{ url_for('competition_players_admin', competition_id=competition.id) }}">Manage players</a>
+    {% endif %}
+
+    <h2>Players</h2>
+    <ul>
+      {% for item in members %}
+        <li>{{ item.user.name }} — {{ item.member.lives }} lives {% if not item.member.active %}(eliminated){% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h1>Competitions</h1>
+    <h2>Available competitions</h2>
+    <ul class="competition-list">
+      {% for competition in competitions %}
+        <li class="competition-item">
+          <div>
+            <strong>{{ competition.name }}</strong>
+            <div class="muted">Code {{ competition.code }}</div>
+          </div>
+          <a class="button secondary" href="{{ url_for('competition_detail', competition_id=competition.id) }}">Open</a>
+        </li>
+      {% endfor %}
+    </ul>
+
+    {% if current_user.is_admin %}
+      <a class="button" href="{{ url_for('create_competition') }}">Create new competition</a>
+    {% endif %}
+    <form method="post" action="{{ url_for('join_competition') }}" class="inline-join-form">
+      <label>Competition code</label>
+      <input type="text" name="code" required />
+      <button type="submit">Join competition</button>
+    </form>
+  </div>
+{% endblock %}

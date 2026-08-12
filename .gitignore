@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.db
+.venv/
+instance/vapid_private_key.pem
+.DS_Store

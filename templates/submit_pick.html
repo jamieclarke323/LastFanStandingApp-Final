@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <div class="fixture-nav">
+      <a class="button secondary{% if not previous_matchweek %} disabled{% endif %}" {% if previous_matchweek %}href="{{ url_for('submit_pick', competition_id=competition.id, matchweek=previous_matchweek) }}"{% endif %}>← Previous</a>
+      <form method="get" class="matchweek-switcher">
+        <select id="matchweek-select" name="matchweek" onchange="window.location.href = '/submit_pick/{{ competition.id }}/' + this.value">
+          {% for available_matchweek in available_matchweeks %}
+            <option value="{{ available_matchweek }}"{% if available_matchweek == matchweek %} selected{% endif %}>Week {{ available_matchweek }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      <a class="button secondary{% if not next_matchweek %} disabled{% endif %}" {% if next_matchweek %}href="{{ url_for('submit_pick', competition_id=competition.id, matchweek=next_matchweek) }}"{% endif %}>Next →</a>
+    </div>
+    {% if picks_locked %}
+      <p class="page-intro">This matchweek has started. Picks are locked and can no longer be amended.</p>
+    {% else %}
+      <p class="page-intro">Choose the team you want to back for this matchweek.</p>
+    {% endif %}
+    <form method="post" id="pick-form">
+      <input type="hidden" name="team" id="selected-team" value="{% if existing_selection %}{{ existing_selection.team_name }}{% endif %}" />
+      {% set current_selection = existing_selection.team_name if existing_selection else '' %}
+      <div class="pick-fixture-list">
+        {% for fixture in pick_fixtures %}
+          <div class="pick-fixture-row">
+            <button type="button" class="team-button pick-team-button pick-team-home{% if current_selection == fixture.home %} selected{% endif %}{% if fixture.home in blocked_teams and fixture.home != current_selection %} disabled{% endif %}{% if picks_locked %} disabled{% endif %}" data-team="{{ fixture.home }}" {% if fixture.home in blocked_teams and fixture.home != current_selection %}disabled{% endif %}{% if picks_locked %}disabled{% endif %}>
+              <span>{{ fixture.home }}</span>
+              {% if fixture.home_badge_filename %}
+                <img class="pick-team-badge" src="{{ url_for('files_asset', filename=fixture.home_badge_filename) }}" alt="{{ fixture.home }} badge" />
+              {% endif %}
+            </button>
+
+            <span class="pick-vs">vs</span>
+
+            <button type="button" class="team-button pick-team-button pick-team-away{% if current_selection == fixture.away %} selected{% endif %}{% if fixture.away in blocked_teams and fixture.away != current_selection %} disabled{% endif %}{% if picks_locked %} disabled{% endif %}" data-team="{{ fixture.away }}" {% if fixture.away in blocked_teams and fixture.away != current_selection %}disabled{% endif %}{% if picks_locked %}disabled{% endif %}>
+              {% if fixture.away_badge_filename %}
+                <img class="pick-team-badge" src="{{ url_for('files_asset', filename=fixture.away_badge_filename) }}" alt="{{ fixture.away }} badge" />
+              {% endif %}
+              <span>{{ fixture.away }}</span>
+            </button>
+          </div>
+        {% endfor %}
+      </div>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById('pick-form');
+    const selectedTeamInput = document.getElementById('selected-team');
+
+    document.querySelectorAll('.team-button').forEach((button) => {
+      button.addEventListener('click', function () {
+        if (button.disabled) return;
+        document.querySelectorAll('.team-button').forEach((btn) => btn.classList.remove('selected'));
+        button.classList.add('selected');
+        selectedTeamInput.value = button.dataset.team;
+        form.submit();
+      });
+    });
+
+    const successFlash = Array.from(document.querySelectorAll('.flash.success')).find((flash) => flash.textContent.trim().toLowerCase() === 'pick saved');
+    if (successFlash) {
+      const toast = document.createElement('div');
+      toast.className = 'pick-toast';
+      toast.textContent = 'pick saved';
+      document.body.appendChild(toast);
+      successFlash.remove();
+      window.setTimeout(() => {
+        toast.remove();
+      }, 1000);
+    }
+  </script>
+{% endblock %}

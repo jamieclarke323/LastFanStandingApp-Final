@@ -1,0 +1,330 @@
+<div class="fixture-board" data-fixture-board data-fixture-view="badge">
+  <div class="fixture-board-toolbar">
+    <div class="fixture-view-toggle" role="group" aria-label="Fixture board view">
+      <button type="button" class="fixture-view-button is-active" data-view-button="badge" aria-pressed="true">Badge view</button>
+      <button type="button" class="fixture-view-button" data-view-button="name" aria-pressed="false">Name view</button>
+    </div>
+  </div>
+
+  
+  <div class="fixture-scroll" data-fixture-scroll>
+    <div class="fixture-table">
+    <div class="fixture-table-header">
+      <div class="fixture-table-cell team-cell">Team</div>
+      <div class="fixture-table-cell fixtures-cell">Fixtures</div>
+    </div>
+    {% for row in fixture_rows %}
+      {% set team_key = row.team|lower|replace('&', 'and')|replace(' ', '')|replace('-', '')|replace("'", '')|replace('.', '') %}
+      <div class="fixture-table-row" data-team-key="{{ team_key }}" data-team-name="{{ row.team }}">
+        <div class="fixture-table-cell team-cell" data-team-cell>
+          {% if row.badge_filename %}
+            <img class="fixture-team-badge" src="{{ url_for('files_asset', filename=row.badge_filename) }}" alt="{{ row.team }} badge" />
+          {% endif %}
+          <button type="button" class="team-name team-name-button{% if row.team|length > 11 %} long-team-name{% endif %}" data-team-name-button data-team-key="{{ team_key }}" aria-pressed="false">{{ row.team }}</button>
+        </div>
+        <div class="fixture-table-cell fixtures-cell">
+          <div class="fixture-badges">
+            {% if row.played_count == 0 %}
+              <span class="fixture-leading-spacer" aria-hidden="true"></span>
+            {% endif %}
+            {% for fixture in row.fixtures %}
+              {% set tooltip = fixture.opponent_team ~ (' (next fixture)' if fixture.is_next else '') %}
+              <button type="button" class="fixture-badge-button{% if fixture.is_next %} is-next{% endif %}{% if fixture.is_played %} is-played{% endif %}" data-fixture-tooltip="{{ tooltip | e }}" aria-label="{{ tooltip | e }}">
+                <span class="fixture-badge-square {% if fixture.is_home %}home{% else %}away{% endif %}{% if fixture.result_status %} result-{{ fixture.result_status }}{% endif %}">
+                  {% if fixture.badge_filename %}
+                    <img src="{{ url_for('files_asset', filename=fixture.badge_filename) }}" alt="{{ fixture.opponent_team }} badge" />
+                  {% else %}
+                    <span class="fixture-badge-fallback">{{ fixture.opponent_team }}</span>
+                  {% endif %}
+                  <span class="fixture-side-marker">{{ 'H' if fixture.is_home else 'A' }}</span>
+                </span>
+                <span class="fixture-name-square {% if fixture.is_home %}home{% else %}away{% endif %}{% if fixture.result_status %} result-{{ fixture.result_status }}{% endif %}">
+                  <span class="fixture-name-label">{{ fixture.opponent_short_name or fixture.opponent_team }}</span>
+                  <span class="fixture-side-marker">{{ 'H' if fixture.is_home else 'A' }}</span>
+                </span>
+                <span class="fixture-badge-tooltip" role="tooltip" aria-hidden="true">{{ tooltip }}</span>
+              </button>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const board = document.querySelector('[data-fixture-board]');
+    const scrollContainer = document.querySelector('[data-fixture-scroll]');
+    const fixtureTable = document.querySelector('.fixture-table');
+    const firstTeamCell = document.querySelector('.fixture-table-header .team-cell');
+    const fixtureRows = Array.from(document.querySelectorAll('.fixture-table-row[data-team-key]'));
+    const teamCells = Array.from(document.querySelectorAll('.fixture-table-row .team-cell[data-team-cell]'));
+    const teamNameButtons = Array.from(document.querySelectorAll('[data-team-name-button]'));
+    const badges = Array.from(document.querySelectorAll('.fixture-badge-button'));
+    const viewButtons = Array.from(document.querySelectorAll('[data-view-button]'));
+    const selectedTeamKeys = new Set();
+    const touchStatesByCell = new WeakMap();
+    const TAP_MOVE_THRESHOLD = 10;
+    const TAP_SUPPRESSION_MS = 700;
+
+    if (!(board && fixtureTable)) {
+      return;
+    }
+
+    if (scrollContainer && firstTeamCell) {
+      scrollContainer.style.setProperty('--team-col-width', firstTeamCell.offsetWidth + 'px');
+    }
+
+    function getVisibleFixtureWidth(button) {
+      if (!button || !board) {
+        return 0;
+      }
+
+      const activeView = board.getAttribute('data-fixture-view');
+      const visibleCell = activeView === 'name'
+        ? button.querySelector('.fixture-name-square')
+        : button.querySelector('.fixture-badge-square');
+
+      return visibleCell ? visibleCell.offsetWidth : button.offsetWidth;
+    }
+
+    function getPeekSliverWidth(button) {
+      const visibleWidth = getVisibleFixtureWidth(button);
+      if (!visibleWidth) {
+        return 8;
+      }
+
+      return Math.max(8, Math.round(visibleWidth * 0.14));
+    }
+
+    function updateFixtureAlignment() {
+      if (!(scrollContainer && firstTeamCell)) {
+        return;
+      }
+
+      const firstRowInTable = fixtureTable.querySelector('.fixture-table-row');
+      const firstBadgeToUse = firstRowInTable
+        ? firstRowInTable.querySelector('.fixture-badge-button.is-next')
+        : null;
+
+      if (!firstBadgeToUse) {
+        scrollContainer.style.setProperty('--peek-width', '0px');
+        scrollContainer.style.setProperty('--peek-sliver-width', '8px');
+        scrollContainer.classList.remove('has-left-peek');
+        return;
+      }
+
+      const previousBadge = firstBadgeToUse.previousElementSibling;
+      const hasPreviousBadge = previousBadge && previousBadge.classList.contains('fixture-badge-button');
+
+      let previousPeekWidth = 0;
+      let peekSliverWidth = 8;
+      if (hasPreviousBadge) {
+        previousPeekWidth = getVisibleFixtureWidth(previousBadge);
+        peekSliverWidth = getPeekSliverWidth(previousBadge);
+      }
+
+      scrollContainer.style.setProperty('--peek-width', previousPeekWidth + 'px');
+      scrollContainer.style.setProperty('--peek-sliver-width', peekSliverWidth + 'px');
+      scrollContainer.classList.toggle('has-left-peek', hasPreviousBadge);
+
+      requestAnimationFrame(function () {
+        const targetLeft = firstTeamCell.offsetWidth + previousPeekWidth;
+        scrollContainer.scrollLeft = Math.max(0, firstBadgeToUse.offsetLeft - targetLeft);
+      });
+    }
+
+    updateFixtureAlignment();
+
+    function clearActiveBadge() {
+      badges.forEach(function (badge) {
+        badge.classList.remove('is-active');
+      });
+    }
+
+    function setPinnedTeamUI() {
+      fixtureRows.forEach(function (row) {
+        const isPinned = selectedTeamKeys.has(row.dataset.teamKey);
+        row.classList.toggle('is-pinned', isPinned);
+      });
+
+      teamNameButtons.forEach(function (button) {
+        const isPinned = selectedTeamKeys.has(button.dataset.teamKey);
+        button.setAttribute('aria-pressed', isPinned ? 'true' : 'false');
+        button.classList.toggle('is-active', isPinned);
+      });
+    }
+
+    function applyTeamPinning() {
+      const rowsByName = fixtureRows.slice().sort(function (rowA, rowB) {
+        return rowA.dataset.teamName.localeCompare(rowB.dataset.teamName);
+      });
+
+      const selectedRows = rowsByName.filter(function (row) {
+        return selectedTeamKeys.has(row.dataset.teamKey);
+      });
+
+      const unselectedRows = rowsByName.filter(function (row) {
+        return !selectedTeamKeys.has(row.dataset.teamKey);
+      });
+
+      const orderedRows = selectedRows.concat(unselectedRows);
+      orderedRows.forEach(function (row) {
+        fixtureTable.appendChild(row);
+      });
+
+      setPinnedTeamUI();
+      clearActiveBadge();
+      updateFixtureAlignment();
+    }
+
+    function toggleTeamSelection(teamKey) {
+      if (!teamKey) {
+        return;
+      }
+
+      if (selectedTeamKeys.has(teamKey)) {
+        selectedTeamKeys.delete(teamKey);
+      } else {
+        selectedTeamKeys.add(teamKey);
+      }
+
+      applyTeamPinning();
+    }
+
+    function updateTouchState(cell, updates) {
+      const previous = touchStatesByCell.get(cell) || {
+        startX: 0,
+        startY: 0,
+        moved: false,
+        suppressUntil: 0,
+      };
+
+      touchStatesByCell.set(cell, Object.assign({}, previous, updates));
+    }
+
+    function shouldSuppressCellTap(cell) {
+      const state = touchStatesByCell.get(cell);
+      return Boolean(state && Date.now() < state.suppressUntil);
+    }
+
+    badges.forEach(function (badge) {
+      badge.addEventListener('click', function (event) {
+        const wasActive = badge.classList.contains('is-active');
+        clearActiveBadge();
+        if (!wasActive) {
+          badge.classList.add('is-active');
+        }
+        event.stopPropagation();
+      });
+    });
+
+    document.addEventListener('click', function (event) {
+      if (!event.target.closest('.fixture-badge-button')) {
+        clearActiveBadge();
+      }
+    });
+
+    teamNameButtons.forEach(function (button) {
+      button.addEventListener('click', function () {
+        const cell = button.closest('[data-team-cell]');
+        if (cell && shouldSuppressCellTap(cell)) {
+          return;
+        }
+
+        toggleTeamSelection(button.dataset.teamKey);
+      });
+    });
+
+    teamCells.forEach(function (cell) {
+      cell.addEventListener('touchstart', function (event) {
+        const firstTouch = event.touches[0];
+        if (!firstTouch) {
+          return;
+        }
+
+        updateTouchState(cell, {
+          startX: firstTouch.clientX,
+          startY: firstTouch.clientY,
+          moved: false,
+          suppressUntil: 0,
+        });
+      }, { passive: true });
+
+      cell.addEventListener('touchmove', function (event) {
+        const firstTouch = event.touches[0];
+        if (!firstTouch) {
+          return;
+        }
+
+        const state = touchStatesByCell.get(cell);
+        if (!state) {
+          return;
+        }
+
+        const movedX = Math.abs(firstTouch.clientX - state.startX);
+        const movedY = Math.abs(firstTouch.clientY - state.startY);
+        if (movedX > TAP_MOVE_THRESHOLD || movedY > TAP_MOVE_THRESHOLD) {
+          updateTouchState(cell, {
+            moved: true,
+            suppressUntil: Date.now() + TAP_SUPPRESSION_MS,
+          });
+        }
+      }, { passive: true });
+
+      cell.addEventListener('touchend', function () {
+        const state = touchStatesByCell.get(cell);
+        if (state && state.moved) {
+          updateTouchState(cell, {
+            suppressUntil: Date.now() + TAP_SUPPRESSION_MS,
+          });
+        }
+      }, { passive: true });
+
+      cell.addEventListener('touchcancel', function () {
+        updateTouchState(cell, {
+          moved: true,
+          suppressUntil: Date.now() + TAP_SUPPRESSION_MS,
+        });
+      }, { passive: true });
+
+      cell.addEventListener('click', function (event) {
+        if (shouldSuppressCellTap(cell)) {
+          return;
+        }
+
+        if (event.target.closest('[data-team-name-button]')) {
+          return;
+        }
+
+        const teamRow = cell.closest('.fixture-table-row');
+        if (teamRow) {
+          toggleTeamSelection(teamRow.dataset.teamKey);
+        }
+      });
+    });
+
+    viewButtons.forEach(function (button) {
+      button.addEventListener('click', function () {
+        if (!board) {
+          return;
+        }
+
+        const nextView = button.dataset.viewButton;
+        board.setAttribute('data-fixture-view', nextView);
+
+        viewButtons.forEach(function (item) {
+          const isActive = item === button;
+          item.classList.toggle('is-active', isActive);
+          item.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        });
+
+        updateFixtureAlignment();
+      });
+    });
+
+    applyTeamPinning();
+  });
+</script>

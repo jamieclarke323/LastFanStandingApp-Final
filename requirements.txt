@@ -1,0 +1,7 @@
+Flask==3.1.0
+Flask-Login==0.6.3
+Flask-SQLAlchemy==3.1.0
+pytest==8.3.2
+pywebpush==2.3.0
+APScheduler==3.11.3
+py-vapid==1.9.4

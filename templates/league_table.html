@@ -1,0 +1,59 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h1>Form table</h1>
+    <p class="page-intro">Recent form over the last 6 matches.</p>
+    <table class="form-table">
+      <thead>
+        <tr><th>Team</th><th>Form</th></tr>
+      </thead>
+      <tbody>
+        {% for row in table %}
+          <tr>
+            <td>{{ row.team }}</td>
+            <td class="form-cells">
+              {% for slot in row.slots %}
+                {% if slot %}
+                  <button type="button" class="form-cell {{ slot.class }}" data-opponent="{{ slot.opponent }}" data-result="{{ slot.label }}">{{ slot.label }}</button>
+                {% else %}
+                  <button type="button" class="form-cell empty" aria-label="No result yet"></button>
+                {% endif %}
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div id="form-tooltip" class="form-tooltip" hidden></div>
+  </div>
+  <script>
+    const tooltip = document.getElementById('form-tooltip');
+    const cells = document.querySelectorAll('.form-cell');
+
+    const showTooltip = (cell, event) => {
+      event?.stopPropagation();
+      tooltip.textContent = `${cell.dataset.result} vs ${cell.dataset.opponent}`;
+      tooltip.hidden = false;
+      const rect = cell.getBoundingClientRect();
+      tooltip.style.left = `${rect.left + rect.width / 2}px`;
+      tooltip.style.top = `${rect.top - 12}px`;
+    };
+
+    const hideTooltip = () => {
+      tooltip.hidden = true;
+    };
+
+    cells.forEach((cell) => {
+      cell.addEventListener('mouseenter', (event) => showTooltip(cell, event));
+      cell.addEventListener('mouseleave', hideTooltip);
+      cell.addEventListener('click', (event) => {
+        if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+          return;
+        }
+        showTooltip(cell, event);
+      });
+    });
+
+    document.addEventListener('click', hideTooltip);
+  </script>
+{% endblock %}

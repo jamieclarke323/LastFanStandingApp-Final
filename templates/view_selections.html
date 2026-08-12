@@ -1,0 +1,81 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h1>View selections</h1>
+    <h2>Matchweek {{ matchweek }} leaderboard</h2>
+    {% if deadline and not current_week_revealed %}
+      <p class="page-intro">Submission deadline: {{ deadline.strftime('%d %b %Y %H:%M') }}</p>
+    {% endif %}
+
+    <div class="selection-leaderboard-wrap">
+      <table class="selection-leaderboard-table">
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>Lives</th>
+            {% for week in weeks %}
+              <th>W{{ week }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for player in players %}
+            <tr>
+              <td class="selection-player-name">{{ player.name }}</td>
+              <td>
+                <span class="selection-lives-pill lives-{{ player.lives }}">{{ player.lives }}</span>
+              </td>
+              {% for pick in player.picks %}
+                <td>
+                  {% if pick.display == 'status' %}
+                    <span class="selection-status {% if pick.has_submitted %}submitted{% else %}not-submitted{% endif %} selection-status-inline">{% if pick.has_submitted %}✓{% else %}-{% endif %}</span>
+                  {% elif pick.team_badge_filename %}
+                    <button type="button" class="fixture-badge-button selection-badge-button{% if pick.outcome == 'win' %} outcome-win{% elif pick.outcome == 'loss' %} outcome-loss{% endif %}" aria-label="{{ pick.team_name }}">
+                      <span class="fixture-badge-square">
+                        <img src="{{ url_for('files_asset', filename=pick.team_badge_filename) }}" alt="{{ pick.team_name }} badge" />
+                      </span>
+                      {% if pick.fixture_label %}
+                        <span class="fixture-badge-tooltip">{{ pick.fixture_label }}</span>
+                      {% endif %}
+                    </button>
+                  {% else %}
+                    <span class="selection-status not-submitted selection-status-inline">-</span>
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const badges = Array.from(document.querySelectorAll('.selection-badge-button'));
+
+      function clearActiveBadge() {
+        badges.forEach(function (badge) {
+          badge.classList.remove('is-active');
+        });
+      }
+
+      badges.forEach(function (badge) {
+        badge.addEventListener('click', function (event) {
+          const wasActive = badge.classList.contains('is-active');
+          clearActiveBadge();
+          if (!wasActive) {
+            badge.classList.add('is-active');
+          }
+          event.stopPropagation();
+        });
+      });
+
+      document.addEventListener('click', function (event) {
+        if (!event.target.closest('.selection-badge-button')) {
+          clearActiveBadge();
+        }
+      });
+    });
+  </script>
+{% endblock %}

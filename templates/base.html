@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Last Fan Standing</title>
+    <link href="https://fonts.cdnfonts.com/css/eras-demi-itc" rel="stylesheet" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}" />
+    <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='icons/icon-192.png') }}" />
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}" />
+    <meta name="theme-color" content="#5b2fb0" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="LFS" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  </head>
+  <body>
+    <nav class="site-nav" id="site-nav">
+      <div class="nav-links" id="nav-links">
+        <a href="{{ url_for('home') }}">Home</a>
+        {% if current_user.is_authenticated %}
+          <a href="{{ view_selections_url if view_selections_url else url_for('competitions') }}">View Selections</a>
+          <a href="{{ submit_pick_url if submit_pick_url else url_for('competitions') }}">Submit Pick</a>
+          {% if notifications_enabled %}
+          <a href="{{ url_for('notifications') }}">Notifications</a>
+          {% endif %}
+          <a href="{{ url_for('logout') }}" class="nav-logout">Logout</a>
+        {% else %}
+          <a href="{{ url_for('login') }}">Login</a>
+        {% endif %}
+      </div>
+    </nav>
+
+    <main>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="flash {{ category }}">{{ message }}</div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+
+    {% if notifications_enabled %}
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('{{ url_for("static", filename="sw.js") }}').catch(function () {
+          // Ignore registration failures (e.g. unsupported browser).
+        });
+      }
+    </script>
+    {% endif %}
+  </body>
+</html>
+

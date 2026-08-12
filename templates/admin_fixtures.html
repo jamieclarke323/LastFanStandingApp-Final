@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h1>Admin: edit fixture schedule</h1>
+    <p>Change a fixture's matchweek or kickoff date/time. Date format must be <code>DD/MM/YYYY HH:MM</code>.</p>
+    {% for week in fixtures_by_week %}
+      <h2>Matchweek {{ week.matchweek }}</h2>
+      {% for fixture in week.fixtures %}
+        <form method="post" class="inline-form fixture-edit-row">
+          <input type="hidden" name="match_number" value="{{ fixture.match_number }}" />
+          <span class="fixture-edit-teams">{{ fixture.home_team }} vs {{ fixture.away_team }}</span>
+          <label>
+            Matchweek
+            <input type="number" name="matchweek" value="{{ week.matchweek }}" min="1" required />
+          </label>
+          <label>
+            Date/time
+            <input type="text" name="date" value="{{ fixture.date }}" placeholder="DD/MM/YYYY HH:MM" required />
+          </label>
+          <button type="submit" class="result-button">Save</button>
+        </form>
+      {% endfor %}
+    {% endfor %}
+  </div>
+{% endblock %}

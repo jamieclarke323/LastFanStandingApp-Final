@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card">
+    <h1>Fixtures</h1>
+    {% if fixture_rows %}
+      {% include '_fixture_board.html' %}
+    {% else %}
+      <p>No fixtures available yet.</p>
+    {% endif %}
+  </div>
+{% endblock %}

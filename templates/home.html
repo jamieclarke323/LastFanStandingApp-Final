@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="card home-summary-card">
+    {% if competition %}
+      <h1 class="home-summary-title">{{ competition.name }}</h1>
+
+      <div class="home-summary-grid">
+        <div class="home-summary-item">
+          <span class="home-summary-label">Lives Remaining</span>
+          <span class="selection-lives-pill lives-{{ member.lives }} home-lives-pill">{{ member.lives }}</span>
+        </div>
+
+        <div class="home-summary-item">
+          <span class="home-summary-label">This Weekend</span>
+          {% if pick %}
+            <span class="home-weekend-team">
+              <span class="fixture-badge-square home-weekend-badge">
+                {% if selected_team_badge_filename %}
+                  <img src="{{ url_for('files_asset', filename=selected_team_badge_filename) }}" alt="{{ pick.team_name }} badge" />
+                {% else %}
+                  <span class="fixture-badge-fallback">{{ pick.team_name[:3].upper() }}</span>
+                {% endif %}
+              </span>
+              <span class="home-weekend-name">{{ pick.team_name }}</span>
+            </span>
+          {% else %}
+            <span class="missing">not yet submitted</span>
+          {% endif %}
+        </div>
+
+        {% if not payment_paid %}
+        <div class="home-summary-item">
+          <span class="home-summary-label">Payment Status</span>
+          <span class="payment-pill {% if payment_paid %}paid{% else %}unpaid{% endif %}">
+            {% if payment_paid %}Paid{% else %}Unpaid{% endif %}
+          </span>
+        </div>
+        {% endif %}
+
+        {% if deadline_label %}
+          <div class="home-summary-item home-summary-item-wide">
+            <span class="home-summary-label">Submission Deadline</span>
+            <span class="home-summary-value">{{ deadline_label.strftime('%d %b %Y %H:%M') }}</span>
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="home-summary-actions">
+        <a class="button" href="{{ url_for('submit_pick', competition_id=competition.id, matchweek=current_week) }}">Submit pick</a>
+        <a class="button secondary" href="{{ url_for('view_selections', competition_id=competition.id, matchweek=current_week) }}">View competition</a>
+        {% if notifications_enabled %}
+        <a class="button secondary" href="{{ url_for('notifications') }}">Remind me</a>
+        {% endif %}
+      </div>
+    {% else %}
+      <p>You are not in a competition yet.</p>
+      <form method="post" action="{{ url_for('join_competition') }}" class="home-join-form">
+        <label for="home-join-code" class="home-summary-label">Enter competition code</label>
+        <input
+          id="home-join-code"
+          type="text"
+          name="code"
+          placeholder="e.g. LFS2026"
+          required
+          autocomplete="off"
+        />
+        <button type="submit" class="button">Join competition</button>
+      </form>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Fixtures</h2>
+    <p class="page-intro">Tap on a badge on to see the team name.</p>
+    {% if fixture_rows %}
+      {% include '_fixture_board.html' %}
+    {% endif %}
+  </div>
+{% endblock %}
