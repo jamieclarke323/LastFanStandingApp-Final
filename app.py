@@ -28,6 +28,7 @@ else:
     _db_name = os.environ.get("LFS_DB_NAME", "last_fan_standing.db")
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{_db_name}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=21)
 
 # Set LFS_NOTIFICATIONS=1 to enable the push-notification feature.
 NOTIFICATIONS_ENABLED: bool = os.environ.get("LFS_NOTIFICATIONS", "0") == "1"
@@ -1077,7 +1078,7 @@ def login():
         password = request.form.get("password", "")
         user = User.query.filter_by(email=email).first()
         if user and user.check_password(password):
-            login_user(user)
+            login_user(user, remember=True)
             flash("Welcome back, {}".format(user.name), "success")
             return redirect(url_for("home"))
         flash("Invalid email or password", "danger")
@@ -1138,7 +1139,7 @@ def register():
         db.session.add(user)
         db.session.commit()
         sync_admin_status()
-        login_user(user)
+        login_user(user, remember=True)
         flash("Account created successfully", "success")
         return redirect(url_for("home"))
     return render_template("register.html")
