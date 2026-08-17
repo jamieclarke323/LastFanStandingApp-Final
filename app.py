@@ -112,8 +112,8 @@ class Competition(db.Model):
 
 class CompetitionMember(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     lives = db.Column(db.Integer, default=3)
     active = db.Column(db.Boolean, default=True)
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -121,8 +121,8 @@ class CompetitionMember(db.Model):
 
 class CompetitionPaymentStatus(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     paid = db.Column(db.Boolean, default=False)
 
     __table_args__ = (
@@ -132,8 +132,8 @@ class CompetitionPaymentStatus(db.Model):
 
 class Selection(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     matchweek = db.Column(db.Integer, nullable=False)
     team_name = db.Column(db.String(80), nullable=False)
     submitted_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -156,8 +156,8 @@ class MatchweekOutcome(db.Model):
 
 class MemberMatchweekResolution(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     matchweek = db.Column(db.Integer, nullable=False)
     lost_life = db.Column(db.Boolean, default=False)
 
@@ -198,8 +198,8 @@ class NotificationPreference(db.Model):
 
 class NotificationLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False, index=True)
     matchweek = db.Column(db.Integer, nullable=False)
     notification_type = db.Column(db.String(30), nullable=False)
     sent_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -645,6 +645,31 @@ def ensure_default_admin_account() -> None:
     db.session.commit()
 
 
+def ensure_performance_indexes() -> None:
+    """Add indexes for databases created before the index=True columns above existed.
+
+    db.create_all() only adds indexes when creating a brand new table, so an
+    already-deployed SQLite database needs these added explicitly. CREATE INDEX IF
+    NOT EXISTS makes this a safe no-op once the index is present (including on a
+    fresh DB, where db.create_all() already created it under the same name).
+    """
+    index_statements = [
+        "CREATE INDEX IF NOT EXISTS ix_competition_member_competition_id ON competition_member (competition_id)",
+        "CREATE INDEX IF NOT EXISTS ix_competition_member_user_id ON competition_member (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_competition_payment_status_competition_id ON competition_payment_status (competition_id)",
+        "CREATE INDEX IF NOT EXISTS ix_competition_payment_status_user_id ON competition_payment_status (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_selection_competition_id ON selection (competition_id)",
+        "CREATE INDEX IF NOT EXISTS ix_selection_user_id ON selection (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_member_matchweek_resolution_competition_id ON member_matchweek_resolution (competition_id)",
+        "CREATE INDEX IF NOT EXISTS ix_member_matchweek_resolution_user_id ON member_matchweek_resolution (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_notification_log_user_id ON notification_log (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_notification_log_competition_id ON notification_log (competition_id)",
+    ]
+    for statement in index_statements:
+        db.session.execute(db.text(statement))
+    db.session.commit()
+
+
 def initialise_admin_if_needed() -> None:
     if User.query.count() == 0:
         admin = User(name="Admin", email="admin@example.com", phone="00000000000", is_admin=True)
@@ -674,16 +699,22 @@ def get_current_user_competition() -> Competition | None:
     return competition
 
 
-def get_fixture_result(matchweek: int, home_team: str, away_team: str):
-    result = FixtureResult.query.filter_by(matchweek=matchweek, home_team=home_team, away_team=away_team).first()
-    if not result or not result.result:
+def _translate_raw_fixture_result(raw_result: str | None) -> str | None:
+    """Translate a stored FixtureResult.result value (home_win/away_win/draw) to home/away/draw."""
+    if not raw_result:
         return None
-
-    if result.result == "home_win":
+    if raw_result == "home_win":
         return "home"
-    if result.result == "away_win":
+    if raw_result == "away_win":
         return "away"
     return "draw"
+
+
+def get_fixture_result(matchweek: int, home_team: str, away_team: str):
+    result = FixtureResult.query.filter_by(matchweek=matchweek, home_team=home_team, away_team=away_team).first()
+    if not result:
+        return None
+    return _translate_raw_fixture_result(result.result)
 
 
 def get_matchweek_teams(matchweek: int) -> list[str]:
@@ -694,30 +725,28 @@ def get_matchweek_teams(matchweek: int) -> list[str]:
     return sorted(teams)
 
 
-def assign_missing_picks_for_matchweek(competition: Competition, matchweek: int) -> None:
+def assign_missing_picks_for_matchweek(
+    competition: Competition,
+    matchweek: int,
+    members: list["CompetitionMember"],
+    selection_by_key: dict[tuple[int, int], str],
+    used_teams_by_user: dict[int, set[str]],
+) -> None:
+    """Auto-assign a fallback pick to any member missing a selection for this matchweek.
+
+    selection_by_key/used_teams_by_user are shared, in-memory lookups covering the whole
+    competition (see resolve_completed_matchweeks_for_competition) - they are updated in
+    place here so later matchweeks in the same pass see any picks just assigned.
+    """
     teams = get_matchweek_teams(matchweek)
     if not teams:
         return
 
-    members = CompetitionMember.query.filter_by(competition_id=competition.id).all()
     for member in members:
-        existing = Selection.query.filter_by(
-            competition_id=competition.id,
-            user_id=member.user_id,
-            matchweek=matchweek,
-        ).first()
-        if existing is not None:
+        if (member.user_id, matchweek) in selection_by_key:
             continue
 
-        used_teams = {
-            item.team_name
-            for item in Selection.query.filter(
-                Selection.competition_id == competition.id,
-                Selection.user_id == member.user_id,
-                Selection.matchweek != matchweek,
-            ).all()
-        }
-
+        used_teams = used_teams_by_user.get(member.user_id, set())
         fallback_team = next((team for team in teams if team not in used_teams), None)
         if fallback_team is None:
             continue
@@ -730,6 +759,8 @@ def assign_missing_picks_for_matchweek(competition: Competition, matchweek: int)
                 team_name=fallback_team,
             )
         )
+        selection_by_key[(member.user_id, matchweek)] = fallback_team
+        used_teams_by_user.setdefault(member.user_id, set()).add(fallback_team)
 
 
 def get_pick_outcome(
@@ -746,8 +777,10 @@ def get_pick_outcome(
         if team_name not in {fixture["home"], fixture["away"]}:
             continue
 
-        result = result_lookup.get((matchweek, fixture["home"], fixture["away"]))
-        if result is None:
+        raw_result = result_lookup.get((matchweek, fixture["home"], fixture["away"]))
+        if raw_result is not None:
+            result = _translate_raw_fixture_result(raw_result)
+        else:
             result = get_fixture_result(matchweek, fixture["home"], fixture["away"])
 
         if result is None:
@@ -762,37 +795,30 @@ def get_pick_outcome(
     return None
 
 
-def resolve_matchweek_for_competition(competition: Competition, matchweek: int) -> None:
-    outcome = MatchweekOutcome.query.filter_by(competition_id=competition.id, matchweek=matchweek).first()
-
+def resolve_matchweek_for_competition(
+    competition: Competition,
+    matchweek: int,
+    members: list["CompetitionMember"],
+    results_lookup: dict[tuple[int, str, str], str],
+    selection_by_key: dict[tuple[int, int], str],
+    resolution_by_key: dict[tuple[int, int], "MemberMatchweekResolution"],
+    outcome_by_week: dict[int, "MatchweekOutcome"],
+) -> None:
+    """Resolve one matchweek using shared, pre-loaded lookups instead of per-fixture/per-member queries."""
     week_data = get_matchweek_data(matchweek)
     if not week_data["fixtures"]:
         return
 
     all_results_recorded = all(
-        get_fixture_result(matchweek, fixture["home"], fixture["away"]) is not None
+        results_lookup.get((matchweek, fixture["home"], fixture["away"])) is not None
         for fixture in week_data["fixtures"]
     )
 
-    members = CompetitionMember.query.filter_by(competition_id=competition.id).all()
-    existing_resolutions = MemberMatchweekResolution.query.filter_by(
-        competition_id=competition.id,
-        matchweek=matchweek,
-    ).all()
-    resolution_by_user_id = {
-        item.user_id: item
-        for item in existing_resolutions
-    }
-
     for member in members:
-        selection = Selection.query.filter_by(
-            competition_id=competition.id,
-            user_id=member.user_id,
-            matchweek=matchweek,
-        ).first()
-        outcome_for_pick = get_pick_outcome(matchweek, selection.team_name if selection else None)
-        should_lose_life = selection is not None and outcome_for_pick == "loss"
-        resolution = resolution_by_user_id.get(member.user_id)
+        team_name = selection_by_key.get((member.user_id, matchweek))
+        outcome_for_pick = get_pick_outcome(matchweek, team_name, result_lookup=results_lookup)
+        should_lose_life = team_name is not None and outcome_for_pick == "loss"
+        resolution = resolution_by_key.get((member.user_id, matchweek))
 
         if resolution is None:
             resolution = MemberMatchweekResolution(
@@ -801,18 +827,50 @@ def resolve_matchweek_for_competition(competition: Competition, matchweek: int) 
                 matchweek=matchweek,
             )
             db.session.add(resolution)
+            resolution_by_key[(member.user_id, matchweek)] = resolution
 
         resolution.lost_life = should_lose_life
 
+    outcome = outcome_by_week.get(matchweek)
     if outcome is None:
         outcome = MatchweekOutcome(competition_id=competition.id, matchweek=matchweek, resolved=all_results_recorded)
         db.session.add(outcome)
+        outcome_by_week[matchweek] = outcome
     else:
         outcome.resolved = all_results_recorded
 
 
 def resolve_completed_matchweeks_for_competition(competition: Competition, now: datetime | None = None) -> None:
+    """Resolve every due matchweek for a competition.
+
+    Loads all the data this needs (fixture results, existing resolutions/outcomes,
+    selections) once up front rather than issuing a query per fixture/member/matchweek,
+    and skips matchweeks that are already fully resolved for every current member.
+    """
     current_time = now or datetime.utcnow()
+
+    members = CompetitionMember.query.filter_by(competition_id=competition.id).all()
+    member_user_ids = {member.user_id for member in members}
+
+    results_lookup = _build_fixture_results_lookup()
+
+    outcome_by_week = {
+        item.matchweek: item
+        for item in MatchweekOutcome.query.filter_by(competition_id=competition.id).all()
+    }
+
+    resolution_by_key: dict[tuple[int, int], MemberMatchweekResolution] = {}
+    resolved_user_ids_by_week: dict[int, set[int]] = {}
+    for item in MemberMatchweekResolution.query.filter_by(competition_id=competition.id).all():
+        resolution_by_key[(item.user_id, item.matchweek)] = item
+        resolved_user_ids_by_week.setdefault(item.matchweek, set()).add(item.user_id)
+
+    selection_by_key: dict[tuple[int, int], str] = {}
+    used_teams_by_user: dict[int, set[str]] = {}
+    for item in Selection.query.filter_by(competition_id=competition.id).all():
+        selection_by_key[(item.user_id, item.matchweek)] = item.team_name
+        used_teams_by_user.setdefault(item.user_id, set()).add(item.team_name)
+
     for entry in FIXTURES_BY_MATCHWEEK:
         week = entry["matchweek"]
         if week < competition.start_matchweek:
@@ -823,11 +881,11 @@ def resolve_completed_matchweeks_for_competition(competition: Competition, now: 
             continue
 
         all_results_recorded = all(
-            get_fixture_result(week, fixture["home"], fixture["away"]) is not None
+            results_lookup.get((week, fixture["home"], fixture["away"])) is not None
             for fixture in week_data["fixtures"]
         )
         any_results_recorded = any(
-            get_fixture_result(week, fixture["home"], fixture["away"]) is not None
+            results_lookup.get((week, fixture["home"], fixture["away"])) is not None
             for fixture in week_data["fixtures"]
         )
 
@@ -835,19 +893,27 @@ def resolve_completed_matchweeks_for_competition(competition: Competition, now: 
         if not any_results_recorded and (kickoff is None or kickoff > current_time):
             continue
 
+        existing_outcome = outcome_by_week.get(week)
+        already_resolved = (
+            existing_outcome is not None
+            and existing_outcome.resolved
+            and member_user_ids <= resolved_user_ids_by_week.get(week, set())
+        )
+        if already_resolved:
+            continue
+
         if kickoff is not None and kickoff <= current_time:
-            assign_missing_picks_for_matchweek(competition, week)
+            assign_missing_picks_for_matchweek(competition, week, members, selection_by_key, used_teams_by_user)
 
-        resolve_matchweek_for_competition(competition, week)
+        resolve_matchweek_for_competition(
+            competition, week, members, results_lookup, selection_by_key, resolution_by_key, outcome_by_week,
+        )
+        resolved_user_ids_by_week[week] = set(member_user_ids)
 
-    members = CompetitionMember.query.filter_by(competition_id=competition.id).all()
-    loss_counts = {
-        member.user_id: 0
-        for member in members
-    }
-    for item in MemberMatchweekResolution.query.filter_by(competition_id=competition.id, lost_life=True).all():
-        if item.user_id in loss_counts:
-            loss_counts[item.user_id] += 1
+    loss_counts = {member.user_id: 0 for member in members}
+    for (user_id, _matchweek), resolution in resolution_by_key.items():
+        if resolution.lost_life and user_id in loss_counts:
+            loss_counts[user_id] += 1
 
     for member in members:
         member.lives = max(0, 3 - loss_counts.get(member.user_id, 0))
@@ -1000,6 +1066,7 @@ def ensure_database_ready() -> None:
 
     with app.app_context():
         db.create_all()
+        ensure_performance_indexes()
         if not app.config.get("TESTING"):
             initialise_admin_if_needed()
 

@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Last Fan Standing</title>
+    <link rel="preconnect" href="https://fonts.cdnfonts.com" crossorigin />
+    <link rel="dns-prefetch" href="https://fonts.cdnfonts.com" />
     <link href="https://fonts.cdnfonts.com/css/eras-demi-itc" rel="stylesheet" />
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
     <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}?v=2" />
@@ -15,6 +17,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   </head>
   <body>
+    <div class="page-loading-bar" id="page-loading-bar" aria-hidden="true"></div>
     <nav class="site-nav" id="site-nav">
       <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false" aria-controls="nav-links">
         <span></span><span></span><span></span>
@@ -72,6 +75,48 @@
             navLinks.classList.remove('open');
             navToggle.setAttribute('aria-expanded', 'false');
           });
+        });
+      })();
+    </script>
+
+    <script>
+      (function () {
+        function isPlainLeftClick(event) {
+          return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+        }
+
+        function isSameOriginNavigableLink(link) {
+          if (!link || !link.hasAttribute('href')) return false;
+          if (link.target && link.target !== '_self') return false;
+          if (link.hasAttribute('download')) return false;
+
+          const href = link.getAttribute('href');
+          if (!href || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) {
+            return false;
+          }
+
+          try {
+            return new URL(href, window.location.href).origin === window.location.origin;
+          } catch (err) {
+            return false;
+          }
+        }
+
+        document.addEventListener('click', function (event) {
+          if (event.defaultPrevented || !isPlainLeftClick(event)) return;
+          const link = event.target.closest('a');
+          if (isSameOriginNavigableLink(link)) {
+            document.body.classList.add('is-navigating');
+          }
+        });
+
+        document.addEventListener('submit', function () {
+          document.body.classList.add('is-navigating');
+        });
+
+        // Clear the indicator if a page is restored from the back/forward cache.
+        window.addEventListener('pageshow', function () {
+          document.body.classList.remove('is-navigating');
         });
       })();
     </script>

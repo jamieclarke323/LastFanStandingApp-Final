@@ -49,6 +49,41 @@ body {
   color: var(--text);
 }
 
+.page-loading-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  z-index: 2000;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.page-loading-bar::before {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 0;
+  opacity: 0;
+  background: linear-gradient(90deg, var(--purple) 0%, var(--purple-bright) 100%);
+}
+
+body.is-navigating {
+  cursor: progress;
+}
+
+body.is-navigating .page-loading-bar::before {
+  opacity: 1;
+  animation: page-loading-progress 1s ease-in-out infinite;
+}
+
+@keyframes page-loading-progress {
+  0% { width: 0%; margin-left: 0%; }
+  50% { width: 60%; margin-left: 20%; }
+  100% { width: 0%; margin-left: 100%; }
+}
+
 .site-nav {
   display: flex;
   align-items: center;
