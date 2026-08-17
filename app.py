@@ -1565,6 +1565,11 @@ def fixtures():
     return render_template("fixtures.html", fixture_rows=get_cached_fixture_rows())
 
 
+@app.route("/rules-and-prizes")
+def rules_and_prizes():
+    return render_template("rules_prizes.html")
+
+
 @app.route("/admin/results", methods=["GET", "POST"])
 @login_required
 def admin_results():
