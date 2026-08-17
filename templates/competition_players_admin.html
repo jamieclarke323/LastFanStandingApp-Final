@@ -30,6 +30,9 @@
                 <form method="post" action="{{ url_for('toggle_competition_payment', competition_id=competition.id, user_id=item.user.id) }}" class="inline-form">
                   <button type="submit" class="button secondary small">Mark as {% if item.paid %}unpaid{% else %}paid{% endif %}</button>
                 </form>
+                <form method="post" action="{{ url_for('remove_competition_player', competition_id=competition.id, user_id=item.user.id) }}" class="inline-form" onsubmit="return confirm('Remove {{ item.user.name }} and delete all their selections from this competition? This cannot be undone.');">
+                  <button type="submit" class="button danger small">Remove player</button>
+                </form>
               </td>
             </tr>
           {% endfor %}

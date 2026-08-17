@@ -158,6 +158,12 @@ button {
   box-shadow: none;
 }
 
+.button.danger {
+  background: linear-gradient(135deg, #b91c1c 0%, #7f1d1d 100%);
+  border-color: rgba(220, 38, 38, 0.5);
+  box-shadow: none;
+}
+
 .button.disabled {
   opacity: 0.45;
   pointer-events: none;

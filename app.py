@@ -1301,6 +1301,34 @@ def toggle_competition_payment(competition_id: int, user_id: int):
     return redirect(url_for("competition_players_admin", competition_id=competition.id))
 
 
+@app.route("/competitions/<int:competition_id>/players/<int:user_id>/remove", methods=["POST"])
+@login_required
+def remove_competition_player(competition_id: int, user_id: int):
+    competition = Competition.query.get_or_404(competition_id)
+    if current_user.id != competition.admin_id:
+        flash("Only the competition owner can remove players", "danger")
+        return redirect(url_for("competition_detail", competition_id=competition.id))
+
+    if user_id == competition.admin_id:
+        flash("You cannot remove the competition owner", "danger")
+        return redirect(url_for("competition_players_admin", competition_id=competition.id))
+
+    member = CompetitionMember.query.filter_by(competition_id=competition.id, user_id=user_id).first()
+    if member is None:
+        flash("Player is not in this competition", "danger")
+        return redirect(url_for("competition_players_admin", competition_id=competition.id))
+
+    Selection.query.filter_by(competition_id=competition.id, user_id=user_id).delete()
+    MemberMatchweekResolution.query.filter_by(competition_id=competition.id, user_id=user_id).delete()
+    CompetitionPaymentStatus.query.filter_by(competition_id=competition.id, user_id=user_id).delete()
+    NotificationLog.query.filter_by(competition_id=competition.id, user_id=user_id).delete()
+    db.session.delete(member)
+    db.session.commit()
+
+    flash("Player and their selections were removed from the competition", "success")
+    return redirect(url_for("competition_players_admin", competition_id=competition.id))
+
+
 @app.route("/view_selections/<int:competition_id>/<int:matchweek>")
 @login_required
 def view_selections(competition_id: int, matchweek: int):
