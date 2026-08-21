@@ -4,10 +4,11 @@ import base64
 import csv
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import List
+from zoneinfo import ZoneInfo
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -280,6 +281,19 @@ def get_schedule() -> List[dict]:
 SCHEDULE = get_schedule()
 FIXTURES_CSV_PATH = Path(__file__).parent / "files" / "202627 EPL fixtures.csv"
 
+# EPL fixture kickoff times are published in UK local time (BST in summer, GMT in
+# winter), but the rest of the app compares everything against datetime.utcnow().
+UK_TIMEZONE = ZoneInfo("Europe/London")
+
+
+def parse_uk_kickoff_to_utc(date_str: str) -> datetime | None:
+    """Parse a 'DD/MM/YYYY HH:MM' UK-local kickoff time into a naive UTC datetime."""
+    try:
+        naive_local = datetime.strptime(date_str, "%d/%m/%Y %H:%M")
+    except ValueError:
+        return None
+    return naive_local.replace(tzinfo=UK_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
+
 
 def load_fixtures_from_csv() -> List[dict]:
     if not FIXTURES_CSV_PATH.exists():
@@ -380,10 +394,7 @@ def get_fixture_index() -> dict:
         kickoff: datetime | None = None
         if entry["fixtures"]:
             first_fixture = entry["fixtures"][0]
-            try:
-                kickoff = datetime.strptime(first_fixture["date"], "%d/%m/%Y %H:%M")
-            except ValueError:
-                kickoff = None
+            kickoff = parse_uk_kickoff_to_utc(first_fixture["date"])
         kickoffs[week] = kickoff
 
     FIXTURE_INDEX_CACHE["source_id"] = source_id
@@ -480,10 +491,7 @@ def get_team_fixtures(
             kickoff = None
             raw_date = fixture.get("date")
             if raw_date:
-                try:
-                    kickoff = datetime.strptime(raw_date, "%d/%m/%Y %H:%M")
-                except ValueError:
-                    kickoff = None
+                kickoff = parse_uk_kickoff_to_utc(raw_date)
 
             result_value = result_lookup.get((entry["matchweek"], fixture["home_team"], fixture["away_team"]))
             if result_value is None:
