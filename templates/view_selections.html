@@ -7,6 +7,10 @@
       <p class="page-intro">Submission deadline: {{ deadline.strftime('%d %b %Y %H:%M') }}</p>
     {% endif %}
 
+    {% if current_week_revealed %}
+      <button type="button" id="download-picks-button" class="button secondary">Download picks</button>
+    {% endif %}
+
     <div class="selection-leaderboard-wrap">
       <table class="selection-leaderboard-table">
         <thead>
@@ -78,4 +82,188 @@
       });
     });
   </script>
+
+  {% if current_week_revealed %}
+  <script>
+    (function () {
+      const DOWNLOAD_PLAYERS = {{ download_players | tojson }};
+      const COMPETITION_NAME = {{ competition.name | tojson }};
+      const MATCHWEEK = {{ matchweek | tojson }};
+      const DEADLINE_LABEL = {{ (deadline.strftime('%d %b %Y %H:%M') if deadline else '') | tojson }};
+
+      const CANVAS_WIDTH = 1080;
+      const CANVAS_HEIGHT = 2280;
+      const BG_TOP = '#1a1440';
+      const BG_BOTTOM = '#0b0e1a';
+      const PANEL_COLOR = '#171a24';
+      const LINE_COLOR = '#262b3a';
+      const TEXT_COLOR = '#f2f4ff';
+      const MUTED_COLOR = '#9ea6c2';
+      const LIVES_COLOR = '#4ade80';
+
+      function loadImage(src) {
+        return new Promise(function (resolve) {
+          const img = new Image();
+          img.onload = function () { resolve(img); };
+          img.onerror = function () { resolve(null); };
+          img.src = src;
+        });
+      }
+
+      function drawRoundedRect(ctx, x, y, width, height, radius) {
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.arcTo(x + width, y, x + width, y + height, radius);
+        ctx.arcTo(x + width, y + height, x, y + height, radius);
+        ctx.arcTo(x, y + height, x, y, radius);
+        ctx.arcTo(x, y, x + width, y, radius);
+        ctx.closePath();
+      }
+
+      function truncateText(ctx, text, maxWidth) {
+        if (ctx.measureText(text).width <= maxWidth) return text;
+        let truncated = text;
+        while (truncated.length > 1 && ctx.measureText(truncated + '…').width > maxWidth) {
+          truncated = truncated.slice(0, -1);
+        }
+        return truncated + '…';
+      }
+
+      async function buildImage() {
+        const badgeImages = {};
+        await Promise.all(DOWNLOAD_PLAYERS.map(async function (player) {
+          if (player.badge_url && !badgeImages[player.badge_url]) {
+            badgeImages[player.badge_url] = await loadImage(player.badge_url);
+          }
+        }));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = CANVAS_WIDTH;
+        canvas.height = CANVAS_HEIGHT;
+        const ctx = canvas.getContext('2d');
+
+        const bgGradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+        bgGradient.addColorStop(0, BG_TOP);
+        bgGradient.addColorStop(0.4, BG_BOTTOM);
+        ctx.fillStyle = bgGradient;
+        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+        const margin = 48;
+        let cursorY = 90;
+
+        ctx.fillStyle = TEXT_COLOR;
+        ctx.font = '700 44px Arial';
+        ctx.textBaseline = 'top';
+        ctx.fillText(truncateText(ctx, COMPETITION_NAME, CANVAS_WIDTH - margin * 2), margin, cursorY);
+        cursorY += 60;
+
+        ctx.font = '600 32px Arial';
+        ctx.fillStyle = MUTED_COLOR;
+        ctx.fillText('Matchweek ' + MATCHWEEK + ' leaderboard', margin, cursorY);
+        cursorY += 44;
+
+        if (DEADLINE_LABEL) {
+          ctx.font = '400 26px Arial';
+          ctx.fillText('Deadline: ' + DEADLINE_LABEL, margin, cursorY);
+          cursorY += 40;
+        }
+
+        cursorY += 20;
+        const footerHeight = 70;
+        const listTop = cursorY;
+        const listBottom = CANVAS_HEIGHT - footerHeight;
+        const listHeight = listBottom - listTop;
+
+        const useTwoColumns = DOWNLOAD_PLAYERS.length > 14;
+        const columnCount = useTwoColumns ? 2 : 1;
+        const columnGap = 40;
+        const columnWidth = (CANVAS_WIDTH - margin * 2 - columnGap * (columnCount - 1)) / columnCount;
+        const rowsPerColumn = Math.ceil(DOWNLOAD_PLAYERS.length / columnCount);
+        const rowHeight = Math.max(34, Math.min(78, listHeight / Math.max(rowsPerColumn, 1)));
+        const badgeSize = Math.min(48, rowHeight - 12);
+        const nameFontSize = Math.max(18, Math.min(30, rowHeight * 0.4));
+        const numberFontSize = Math.max(16, nameFontSize - 4);
+
+        DOWNLOAD_PLAYERS.forEach(function (player, index) {
+          const column = Math.floor(index / rowsPerColumn);
+          const rowInColumn = index % rowsPerColumn;
+          const columnX = margin + column * (columnWidth + columnGap);
+          const rowY = listTop + rowInColumn * rowHeight;
+
+          ctx.fillStyle = MUTED_COLOR;
+          ctx.font = '600 ' + numberFontSize + 'px Arial';
+          ctx.fillText(String(index + 1), columnX, rowY + (rowHeight - numberFontSize) / 2);
+
+          const nameX = columnX + 48;
+          const livesX = columnX + columnWidth - 130;
+          const badgeX = columnX + columnWidth - badgeSize - 6;
+
+          ctx.fillStyle = TEXT_COLOR;
+          ctx.font = '600 ' + nameFontSize + 'px Arial';
+          const maxNameWidth = livesX - nameX - 16;
+          ctx.fillText(truncateText(ctx, player.name, maxNameWidth), nameX, rowY + (rowHeight - nameFontSize) / 2);
+
+          ctx.fillStyle = LIVES_COLOR;
+          ctx.font = '700 ' + nameFontSize + 'px Arial';
+          ctx.fillText(String(player.lives), livesX, rowY + (rowHeight - nameFontSize) / 2);
+
+          const badgeImg = player.badge_url ? badgeImages[player.badge_url] : null;
+          const badgeY = rowY + (rowHeight - badgeSize) / 2;
+          if (badgeImg) {
+            ctx.drawImage(badgeImg, badgeX, badgeY, badgeSize, badgeSize);
+          } else {
+            ctx.fillStyle = PANEL_COLOR;
+            ctx.strokeStyle = LINE_COLOR;
+            drawRoundedRect(ctx, badgeX, badgeY, badgeSize, badgeSize, 8);
+            ctx.fill();
+            ctx.stroke();
+          }
+
+          if (rowInColumn < rowsPerColumn - 1) {
+            ctx.strokeStyle = LINE_COLOR;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(columnX, rowY + rowHeight);
+            ctx.lineTo(columnX + columnWidth, rowY + rowHeight);
+            ctx.stroke();
+          }
+        });
+
+        ctx.fillStyle = MUTED_COLOR;
+        ctx.font = '400 24px Arial';
+        ctx.textAlign = 'center';
+        const now = new Date();
+        const timestamp = now.toLocaleDateString() + ' ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        ctx.fillText(DOWNLOAD_PLAYERS.length + ' players • Generated ' + timestamp, CANVAS_WIDTH / 2, CANVAS_HEIGHT - 46);
+        ctx.textAlign = 'left';
+
+        return canvas;
+      }
+
+      const downloadButton = document.getElementById('download-picks-button');
+      if (downloadButton) {
+        downloadButton.addEventListener('click', function () {
+          downloadButton.disabled = true;
+          const originalLabel = downloadButton.textContent;
+          downloadButton.textContent = 'Generating…';
+
+          buildImage().then(function (canvas) {
+            canvas.toBlob(function (blob) {
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = 'matchweek-' + MATCHWEEK + '-picks.png';
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+              downloadButton.disabled = false;
+              downloadButton.textContent = originalLabel;
+            }, 'image/png');
+          });
+        });
+      }
+    })();
+  </script>
+  {% endif %}
 {% endblock %}

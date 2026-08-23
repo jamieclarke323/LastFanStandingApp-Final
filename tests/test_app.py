@@ -96,7 +96,20 @@ def test_submit_pick_and_view_selection(client):
     assert b'Arsenal' in pick_response.data
 
 
-def test_future_week_picks_respect_previous_team_usage(client):
+def test_future_week_picks_respect_previous_team_usage(client, monkeypatch):
+    import app as app_module
+
+    class WellBeforeKickoffDateTime:
+        @staticmethod
+        def utcnow():
+            return datetime(2020, 1, 1, 0, 0)
+
+        @staticmethod
+        def strptime(value, fmt):
+            return datetime.strptime(value, fmt)
+
+    monkeypatch.setattr(app_module, 'datetime', WellBeforeKickoffDateTime)
+
     client.post('/register', data={
         'first_name': 'Taylor',
         'last_initial': 'R',
@@ -591,6 +604,19 @@ def test_missing_pick_auto_assigns_first_unused_alphabetical_team(client, monkey
 def test_view_selections_shows_submission_state_then_reveals_badges(client, monkeypatch):
     from app import Competition, CompetitionMember, Selection
 
+    import app as app_module
+
+    class WellBeforeKickoffDateTime:
+        @staticmethod
+        def utcnow():
+            return datetime(2020, 1, 1, 0, 0)
+
+        @staticmethod
+        def strptime(value, fmt):
+            return datetime.strptime(value, fmt)
+
+    monkeypatch.setattr(app_module, 'datetime', WellBeforeKickoffDateTime)
+
     client.post('/register', data={
         'first_name': 'Aaron',
         'last_initial': 'A',
@@ -630,8 +656,6 @@ def test_view_selections_shows_submission_state_then_reveals_badges(client, monk
 
         db.session.add(Selection(competition_id=competition.id, user_id=user_a.id, matchweek=1, team_name='Arsenal'))
         db.session.commit()
-
-    import app as app_module
 
     class PreDeadlineDateTime:
         @staticmethod

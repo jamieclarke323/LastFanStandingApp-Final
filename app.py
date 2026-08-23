@@ -1502,6 +1502,22 @@ def view_selections(competition_id: int, matchweek: int):
 
     players.sort(key=lambda item: item["name"].lower())
 
+    download_players = []
+    for player in players:
+        current_pick = player["picks"][-1] if player["picks"] else None
+        team_name = None
+        badge_url = None
+        if current_pick and current_pick.get("display") == "team" and current_pick.get("team_name"):
+            team_name = current_pick["team_name"]
+            if current_pick.get("team_badge_filename"):
+                badge_url = url_for("files_asset", filename=current_pick["team_badge_filename"])
+        download_players.append({
+            "name": player["name"],
+            "lives": player["lives"],
+            "team_name": team_name,
+            "badge_url": badge_url,
+        })
+
     return render_template(
         "view_selections.html",
         competition=competition,
@@ -1511,6 +1527,7 @@ def view_selections(competition_id: int, matchweek: int):
         weeks=weeks,
         deadline=deadline,
         current_week_revealed=current_week_revealed,
+        download_players=download_players,
     )
 
 
@@ -1526,7 +1543,8 @@ def submit_pick(competition_id: int, matchweek: int):
     resolve_completed_matchweeks_for_competition_if_due(competition)
     week_data = get_matchweek_data(matchweek)
     kickoff = get_matchweek_kickoff(matchweek)
-    picks_locked = kickoff is not None and datetime.utcnow() >= kickoff
+    deadline = kickoff - timedelta(hours=1) if kickoff else None
+    picks_locked = deadline is not None and datetime.utcnow() >= deadline
     pick_fixtures = []
     for fixture in week_data["fixtures"]:
         pick_fixtures.append({
