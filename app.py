@@ -1507,8 +1507,10 @@ def view_selections(competition_id: int, matchweek: int):
         current_pick = player["picks"][-1] if player["picks"] else None
         team_name = None
         badge_url = None
+        outcome = None
         if current_pick and current_pick.get("display") == "team" and current_pick.get("team_name"):
             team_name = current_pick["team_name"]
+            outcome = current_pick.get("outcome")
             if current_pick.get("team_badge_filename"):
                 badge_url = url_for("files_asset", filename=current_pick["team_badge_filename"])
         download_players.append({
@@ -1516,6 +1518,7 @@ def view_selections(competition_id: int, matchweek: int):
             "lives": player["lives"],
             "team_name": team_name,
             "badge_url": badge_url,
+            "outcome": outcome,
         })
 
     return render_template(

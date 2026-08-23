@@ -99,7 +99,14 @@
       const LINE_COLOR = '#262b3a';
       const TEXT_COLOR = '#f2f4ff';
       const MUTED_COLOR = '#9ea6c2';
-      const LIVES_COLOR = '#4ade80';
+      const LIFE_COLORS = {
+        3: '#4ade80',
+        2: '#facc15',
+        1: '#ef4444',
+        0: '#9ca3af',
+      };
+      const WIN_RING_COLOR = '#22c55e';
+      const LOSS_RING_COLOR = '#ef4444';
 
       function loadImage(src) {
         return new Promise(function (resolve) {
@@ -203,12 +210,22 @@
           const maxNameWidth = livesX - nameX - 16;
           ctx.fillText(truncateText(ctx, player.name, maxNameWidth), nameX, rowY + (rowHeight - nameFontSize) / 2);
 
-          ctx.fillStyle = LIVES_COLOR;
+          ctx.fillStyle = LIFE_COLORS[player.lives] || LIFE_COLORS[0];
           ctx.font = '700 ' + nameFontSize + 'px Arial';
           ctx.fillText(String(player.lives), livesX, rowY + (rowHeight - nameFontSize) / 2);
 
           const badgeImg = player.badge_url ? badgeImages[player.badge_url] : null;
           const badgeY = rowY + (rowHeight - badgeSize) / 2;
+          const ringColor = player.outcome === 'win'
+            ? WIN_RING_COLOR
+            : (player.outcome === 'loss' ? LOSS_RING_COLOR : null);
+          if (ringColor) {
+            ctx.strokeStyle = ringColor;
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            ctx.arc(badgeX + badgeSize / 2, badgeY + badgeSize / 2, badgeSize / 2 + 4, 0, Math.PI * 2);
+            ctx.stroke();
+          }
           if (badgeImg) {
             ctx.drawImage(badgeImg, badgeX, badgeY, badgeSize, badgeSize);
           } else {
