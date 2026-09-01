@@ -1584,6 +1584,14 @@ def submit_pick(competition_id: int, matchweek: int):
             flash("This matchweek has already started. Picks can no longer be changed.", "danger")
             return redirect(url_for("submit_pick", competition_id=competition.id, matchweek=matchweek))
 
+        action = request.form.get("action", "save")
+        if action == "clear":
+            if existing_selection is not None:
+                db.session.delete(existing_selection)
+                db.session.commit()
+            flash("Pick removed", "success")
+            return redirect(url_for("submit_pick", competition_id=competition.id, matchweek=matchweek))
+
         team = request.form.get("team", "").strip()
         if not team:
             flash("Please choose a team", "danger")

@@ -96,6 +96,49 @@ def test_submit_pick_and_view_selection(client):
     assert b'Arsenal' in pick_response.data
 
 
+def test_submit_pick_can_be_cleared_before_deadline(client, monkeypatch):
+    import app as app_module
+    from app import Competition, Selection
+
+    class BeforeDeadlineDateTime:
+        @staticmethod
+        def utcnow():
+            return datetime(2020, 1, 1, 0, 0)
+
+        @staticmethod
+        def strptime(value, fmt):
+            return datetime.strptime(value, fmt)
+
+    monkeypatch.setattr(app_module, 'datetime', BeforeDeadlineDateTime)
+
+    client.post('/register', data={
+        'first_name': 'Clear',
+        'last_initial': 'P',
+        'email': 'clear@example.com',
+        'phone': '07888888887',
+        'password': 'password123',
+        'confirm_password': 'password123',
+    })
+    client.post('/competitions/create', data={
+        'name': 'Clear Pick League',
+        'code': 'CLEAR1',
+        'start_matchweek': '1',
+    }, follow_redirects=True)
+    client.post('/competitions/join', data={'code': 'CLEAR1'}, follow_redirects=True)
+    client.post('/submit_pick/1/1', data={'team': 'Arsenal'}, follow_redirects=True)
+
+    response = client.post('/submit_pick/1/1', data={'action': 'clear'}, follow_redirects=True)
+
+    assert response.status_code == 200
+    assert b'Pick removed' in response.data
+    assert b'Remove your pick for this matchweek and return to no pick?' in response.data
+
+    with app.app_context():
+        competition = Competition.query.filter_by(code='CLEAR1').first()
+        selection = Selection.query.filter_by(competition_id=competition.id, matchweek=1).first()
+        assert selection is None
+
+
 def test_future_week_picks_respect_previous_team_usage(client, monkeypatch):
     import app as app_module
 
@@ -536,6 +579,10 @@ def test_submit_pick_cannot_amend_after_matchweek_started(client, monkeypatch):
     response = client.post('/submit_pick/1/1', data={'team': 'Coventry'}, follow_redirects=True)
     assert response.status_code == 200
     assert b'can no longer be changed' in response.data
+
+    clear_response = client.post('/submit_pick/1/1', data={'action': 'clear'}, follow_redirects=True)
+    assert clear_response.status_code == 200
+    assert b'can no longer be changed' in clear_response.data
 
     with app.app_context():
         competition = Competition.query.filter_by(code='LOCK01').first()

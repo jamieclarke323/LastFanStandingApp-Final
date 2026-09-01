@@ -19,6 +19,7 @@
     {% endif %}
     <form method="post" id="pick-form">
       <input type="hidden" name="team" id="selected-team" value="{% if existing_selection %}{{ existing_selection.team_name }}{% endif %}" />
+      <input type="hidden" name="action" id="pick-action" value="save" />
       {% set current_selection = existing_selection.team_name if existing_selection else '' %}
       <div class="pick-fixture-list">
         {% for fixture in pick_fixtures %}
@@ -47,13 +48,23 @@
   <script>
     const form = document.getElementById('pick-form');
     const selectedTeamInput = document.getElementById('selected-team');
+    const pickActionInput = document.getElementById('pick-action');
 
     document.querySelectorAll('.team-button').forEach((button) => {
       button.addEventListener('click', function () {
         if (button.disabled) return;
+        if (button.classList.contains('selected')) {
+          const shouldClear = window.confirm('Remove your pick for this matchweek and return to no pick?');
+          if (!shouldClear) return;
+          selectedTeamInput.value = '';
+          pickActionInput.value = 'clear';
+          form.submit();
+          return;
+        }
         document.querySelectorAll('.team-button').forEach((btn) => btn.classList.remove('selected'));
         button.classList.add('selected');
         selectedTeamInput.value = button.dataset.team;
+        pickActionInput.value = 'save';
         form.submit();
       });
     });
