@@ -1242,6 +1242,21 @@ th, td {
   color: #1f2937;
 }
 
+.selection-eliminated-row td:first-child,
+.selection-eliminated-row td:nth-child(2) {
+  background: #0d1120;
+}
+
+.selection-eliminated-text {
+  color: #6b7280 !important;
+  text-decoration: line-through;
+  font-weight: 600;
+}
+
+.selection-lives-pill.selection-eliminated-text {
+  background: #374151 !important;
+}
+
 .selection-status-inline {
   display: inline-flex;
   width: 34px;

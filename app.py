@@ -1490,6 +1490,7 @@ def view_selections(competition_id: int, matchweek: int):
         players.append({
             "name": user.name,
             "lives": membership.lives,
+            "eliminated": membership.lives <= 0,
             "picks": picks,
         })
 
@@ -1497,10 +1498,12 @@ def view_selections(competition_id: int, matchweek: int):
         players.append({
             "name": current_user.name,
             "lives": member.lives,
+            "eliminated": member.lives <= 0,
             "picks": [],
         })
 
-    players.sort(key=lambda item: item["name"].lower())
+    # Eliminated players (zero lives) sink to the bottom, alphabetical within each group.
+    players.sort(key=lambda item: (item["eliminated"], item["name"].lower()))
 
     download_players = []
     for player in players:
@@ -1516,6 +1519,7 @@ def view_selections(competition_id: int, matchweek: int):
         download_players.append({
             "name": player["name"],
             "lives": player["lives"],
+            "eliminated": player["eliminated"],
             "team_name": team_name,
             "badge_url": badge_url,
             "outcome": outcome,

@@ -24,10 +24,10 @@
         </thead>
         <tbody>
           {% for player in players %}
-            <tr>
-              <td class="selection-player-name">{{ player.name }}</td>
+            <tr{% if player.eliminated %} class="selection-eliminated-row"{% endif %}>
+              <td class="selection-player-name{% if player.eliminated %} selection-eliminated-text{% endif %}">{{ player.name }}</td>
               <td>
-                <span class="selection-lives-pill lives-{{ player.lives }}">{{ player.lives }}</span>
+                <span class="selection-lives-pill lives-{{ player.lives }}{% if player.eliminated %} selection-eliminated-text{% endif %}">{{ player.lives }}</span>
               </td>
               {% for pick in player.picks %}
                 <td>
@@ -107,6 +107,7 @@
       };
       const WIN_RING_COLOR = '#22c55e';
       const LOSS_RING_COLOR = '#ef4444';
+      const ELIMINATED_COLOR = '#6b7280';
 
       function loadImage(src) {
         return new Promise(function (resolve) {
@@ -134,6 +135,20 @@
           truncated = truncated.slice(0, -1);
         }
         return truncated + '…';
+      }
+
+      function drawTextMaybeStruck(ctx, text, x, y, fontSize, struckThrough) {
+        const width = ctx.measureText(text).width;
+        ctx.fillText(text, x, y);
+        if (struckThrough) {
+          ctx.strokeStyle = ctx.fillStyle;
+          ctx.lineWidth = Math.max(1.5, fontSize * 0.06);
+          ctx.beginPath();
+          const lineY = y + fontSize * 0.55;
+          ctx.moveTo(x, lineY);
+          ctx.lineTo(x + width, lineY);
+          ctx.stroke();
+        }
       }
 
       async function buildImage() {
@@ -208,11 +223,13 @@
           ctx.fillStyle = TEXT_COLOR;
           ctx.font = '600 ' + nameFontSize + 'px Arial';
           const maxNameWidth = livesX - nameX - 16;
-          ctx.fillText(truncateText(ctx, player.name, maxNameWidth), nameX, rowY + (rowHeight - nameFontSize) / 2);
+          const nameText = truncateText(ctx, player.name, maxNameWidth);
+          ctx.fillStyle = player.eliminated ? ELIMINATED_COLOR : TEXT_COLOR;
+          drawTextMaybeStruck(ctx, nameText, nameX, rowY + (rowHeight - nameFontSize) / 2, nameFontSize, player.eliminated);
 
-          ctx.fillStyle = LIFE_COLORS[player.lives] || LIFE_COLORS[0];
+          ctx.fillStyle = player.eliminated ? ELIMINATED_COLOR : (LIFE_COLORS[player.lives] || LIFE_COLORS[0]);
           ctx.font = '700 ' + nameFontSize + 'px Arial';
-          ctx.fillText(String(player.lives), livesX, rowY + (rowHeight - nameFontSize) / 2);
+          drawTextMaybeStruck(ctx, String(player.lives), livesX, rowY + (rowHeight - nameFontSize) / 2, nameFontSize, player.eliminated);
 
           const badgeImg = player.badge_url ? badgeImages[player.badge_url] : null;
           const badgeY = rowY + (rowHeight - badgeSize) / 2;

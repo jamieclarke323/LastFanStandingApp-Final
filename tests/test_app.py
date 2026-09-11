@@ -1148,6 +1148,111 @@ def test_lives_recalculation_is_idempotent(client, monkeypatch):
         assert second_value == 2
 
 
+def test_view_selections_sorts_eliminated_players_last_and_greys_them_out(client, monkeypatch):
+    import app as app_module
+    from app import Competition, CompetitionMember, FixtureResult, User, resolve_completed_matchweeks_for_competition
+
+    monkeypatch.setattr(app_module, 'FIXTURES_BY_MATCHWEEK', [
+        {
+            'matchweek': 1,
+            'fixtures': [
+                {'home_team': 'Arsenal', 'away_team': 'Coventry', 'location': 'Test Ground', 'date': '01/01/2026 12:00'},
+            ],
+        },
+        {
+            'matchweek': 2,
+            'fixtures': [
+                {'home_team': 'Chelsea', 'away_team': 'Fulham', 'location': 'Test Ground', 'date': '08/01/2026 12:00'},
+            ],
+        },
+        {
+            'matchweek': 3,
+            'fixtures': [
+                {'home_team': 'Liverpool', 'away_team': 'Everton', 'location': 'Test Ground', 'date': '15/01/2026 12:00'},
+            ],
+        },
+    ])
+
+    class BeforeAllKickoffsDateTime:
+        @staticmethod
+        def utcnow():
+            return datetime(2025, 12, 31, 10, 0)
+
+        @staticmethod
+        def strptime(value, fmt):
+            return datetime.strptime(value, fmt)
+
+    monkeypatch.setattr(app_module, 'datetime', BeforeAllKickoffsDateTime)
+
+    # Aaron ('A' surname sorts first alphabetically) will lose every pick and be eliminated.
+    client.post('/register', data={
+        'first_name': 'Aaron',
+        'last_initial': 'A',
+        'email': 'aaron@example.com',
+        'phone': '07000000001',
+        'password': 'password123',
+        'confirm_password': 'password123',
+    })
+    client.post('/competitions/create', data={
+        'name': 'Elimination League',
+        'code': 'ELIM01',
+        'start_matchweek': '1',
+    }, follow_redirects=True)
+    client.post('/competitions/join', data={'code': 'ELIM01'}, follow_redirects=True)
+    client.post('/submit_pick/1/1', data={'team': 'Arsenal'}, follow_redirects=True)
+    client.post('/submit_pick/1/2', data={'team': 'Chelsea'}, follow_redirects=True)
+    client.post('/submit_pick/1/3', data={'team': 'Liverpool'}, follow_redirects=True)
+    client.get('/logout', follow_redirects=True)
+
+    # Zoe ('Z' surname sorts last alphabetically) wins every pick and stays alive.
+    client.post('/register', data={
+        'first_name': 'Zoe',
+        'last_initial': 'Z',
+        'email': 'zoe@example.com',
+        'phone': '07000000002',
+        'password': 'password123',
+        'confirm_password': 'password123',
+    })
+    client.post('/competitions/join', data={'code': 'ELIM01'}, follow_redirects=True)
+    client.post('/submit_pick/1/1', data={'team': 'Coventry'}, follow_redirects=True)
+    client.post('/submit_pick/1/2', data={'team': 'Fulham'}, follow_redirects=True)
+    client.post('/submit_pick/1/3', data={'team': 'Everton'}, follow_redirects=True)
+
+    with app.app_context():
+        db.session.add(FixtureResult(matchweek=1, home_team='Arsenal', away_team='Coventry', result='away_win'))
+        db.session.add(FixtureResult(matchweek=2, home_team='Chelsea', away_team='Fulham', result='away_win'))
+        db.session.add(FixtureResult(matchweek=3, home_team='Liverpool', away_team='Everton', result='away_win'))
+        db.session.commit()
+
+    class AfterAllKickoffsDateTime:
+        @staticmethod
+        def utcnow():
+            return datetime(2026, 1, 16, 12, 0)
+
+        @staticmethod
+        def strptime(value, fmt):
+            return datetime.strptime(value, fmt)
+
+    monkeypatch.setattr(app_module, 'datetime', AfterAllKickoffsDateTime)
+
+    with app.app_context():
+        competition = Competition.query.filter_by(code='ELIM01').first()
+        resolve_completed_matchweeks_for_competition(competition)
+        aaron = User.query.filter_by(email='aaron@example.com').first()
+        aaron_member = CompetitionMember.query.filter_by(competition_id=competition.id, user_id=aaron.id).first()
+        assert aaron_member.lives == 0
+        competition_id = competition.id
+
+    response = client.get(f'/view_selections/{competition_id}/3')
+    assert response.status_code == 200
+    html = response.data.decode()
+
+    assert 'selection-eliminated-row' in html
+    assert 'selection-eliminated-text' in html
+    # Aaron is eliminated (0 lives) so must appear after Zoe despite sorting alphabetically first.
+    assert html.index('Zoe Z') < html.index('Aaron A')
+
+
 def test_admin_result_corrections_restore_all_lives(client, monkeypatch):
     import app as app_module
     from app import Competition, CompetitionMember, User
