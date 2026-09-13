@@ -530,6 +530,13 @@ button {
   gap: 1rem;
   padding: 0.75rem 0;
   border-bottom: 1px solid var(--line);
+  transition: background-color 0.4s ease, box-shadow 0.4s ease;
+}
+
+.fixture-result-row.needs-result-highlight {
+  background-color: rgba(124, 58, 237, 0.14);
+  box-shadow: inset 3px 0 0 var(--purple-bright, #7c3aed);
+  border-radius: 8px;
 }
 
 .result-buttons {

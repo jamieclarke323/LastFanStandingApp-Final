@@ -5,7 +5,7 @@
     {% for week in fixtures_by_week %}
       <h2>Matchweek {{ week.matchweek }}</h2>
       {% for fixture in week.fixtures %}
-        <div class="fixture-result-row">
+        <div class="fixture-result-row" id="fixture-row-{{ week.matchweek }}-{{ loop.index }}" data-has-result="{{ 'true' if fixture.result else 'false' }}">
           <div class="result-buttons">
             <form method="post" class="inline-form">
               <input type="hidden" name="matchweek" value="{{ week.matchweek }}" />
@@ -40,4 +40,18 @@
       {% endfor %}
     {% endfor %}
   </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const firstMissingResult = document.querySelector('.fixture-result-row[data-has-result="false"]');
+      if (firstMissingResult) {
+        firstMissingResult.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        firstMissingResult.classList.add('needs-result-highlight');
+        setTimeout(function () {
+          firstMissingResult.classList.remove('needs-result-highlight');
+        }, 2500);
+      }
+    });
+  </script>
 {% endblock %}
+
