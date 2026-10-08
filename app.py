@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
+import hmac
 import json
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
@@ -12,12 +15,15 @@ from zoneinfo import ZoneInfo
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_from_directory, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 from flask_login import LoginManager, UserMixin, current_user, login_required, login_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
 from pywebpush import WebPushException, webpush
 from sqlalchemy import func
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from werkzeug.security import check_password_hash, generate_password_hash
+
+from recovery_email import recovery_configured, send_password_reset_email
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("LFS_SECRET_KEY", "dev-secret-key")
@@ -30,6 +36,15 @@ else:
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{_db_name}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=21)
+app.config.update(
+    PUBLIC_BASE_URL=os.environ.get("LFS_PUBLIC_BASE_URL", "").rstrip("/"),
+    SMTP_HOST=os.environ.get("LFS_SMTP_HOST", ""),
+    SMTP_PORT=int(os.environ.get("LFS_SMTP_PORT", "587")),
+    SMTP_USERNAME=os.environ.get("LFS_SMTP_USERNAME", ""),
+    SMTP_PASSWORD=os.environ.get("LFS_SMTP_PASSWORD", ""),
+    SMTP_FROM=os.environ.get("LFS_SMTP_FROM", ""),
+    SMTP_SSL=os.environ.get("LFS_SMTP_SSL", "0") == "1",
+)
 
 # Set LFS_NOTIFICATIONS=1 to enable the push-notification feature.
 NOTIFICATIONS_ENABLED: bool = os.environ.get("LFS_NOTIFICATIONS", "0") == "1"
@@ -100,6 +115,26 @@ class User(db.Model, UserMixin):
 
     def check_password(self, password: str) -> bool:
         return check_password_hash(self.password_hash, password)
+
+    def get_id(self) -> str:
+        # Changing the password invalidates sessions and remember cookies everywhere.
+        tag = hmac.new(str(app.config["SECRET_KEY"]).encode(), self.password_hash.encode(), hashlib.sha256).hexdigest()
+        return f"{self.id}:{tag}"
+
+
+class PasswordResetToken(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    token_hash = db.Column(db.String(64), unique=True, nullable=False)
+    password_fingerprint = db.Column(db.String(64), nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False, index=True)
+    used_at = db.Column(db.DateTime, nullable=True)
+
+
+class RecoveryRateLimit(db.Model):
+    key = db.Column(db.String(64), primary_key=True)
+    window = db.Column(db.Integer, primary_key=True)
+    count = db.Column(db.Integer, nullable=False)
 
 
 class Competition(db.Model):
@@ -215,7 +250,14 @@ class NotificationLog(db.Model):
 
 @login_manager.user_loader
 def load_user(user_id: str):
-    return User.query.get(int(user_id))
+    try:
+        identifier, _ = user_id.split(":", 1)
+        user = db.session.get(User, int(identifier))
+    except (ValueError, AttributeError):
+        return None
+    if user and secrets.compare_digest(user.get_id().encode(), user_id.encode()):
+        return user
+    return None
 
 
 def get_schedule() -> List[dict]:
@@ -648,7 +690,6 @@ def ensure_default_admin_account() -> None:
         user.email = default_email
         user.phone = default_phone
         user.is_admin = True
-        user.set_password(default_password)
 
     db.session.commit()
 
@@ -1149,9 +1190,10 @@ def login():
         return redirect(url_for("home"))
 
     if request.method == "POST":
-        email = request.form.get("email", "").strip()
+        email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
-        user = User.query.filter_by(email=email).first()
+        users = User.query.filter(func.lower(User.email) == email).limit(2).all()
+        user = users[0] if len(users) == 1 else None
         if user and user.check_password(password):
             login_user(user, remember=True)
             flash("Welcome back, {}".format(user.name), "success")
@@ -1181,7 +1223,7 @@ def register():
         if not last_initial and legacy_initial:
             last_initial = legacy_initial
 
-        email = request.form.get("email", "").strip()
+        email = request.form.get("email", "").strip().lower()
         phone = request.form.get("phone", "").strip()
         password = request.form.get("password", "")
         confirm_password = request.form.get("confirm_password", "")
@@ -1205,7 +1247,7 @@ def register():
         if User.query.filter(func.lower(User.name) == display_name.lower()).first():
             flash("That first name and last initial is already taken. Please try something a little different e.g. a nickname or the first two letters of your last name", "danger")
             return render_template("register.html")
-        if User.query.filter_by(email=email).first() or User.query.filter_by(phone=phone).first():
+        if User.query.filter(func.lower(User.email) == email).first() or User.query.filter_by(phone=phone).first():
             flash("An account with that email or phone already exists", "danger")
             return render_template("register.html")
 
@@ -1228,19 +1270,202 @@ def logout():
     return redirect(url_for("login"))
 
 
+def recovery_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def recovery_csrf_token():
+    if "recovery_csrf" not in session:
+        session["recovery_csrf"] = secrets.token_urlsafe(32)
+    return session["recovery_csrf"]
+
+
+def recovery_csrf_valid():
+    return secrets.compare_digest(
+        recovery_csrf_token().encode(), request.form.get("csrf_token", "").encode()
+    )
+
+
+def allow_recovery_attempt(scope, identifier, limit):
+    """Atomic SQLite upsert: shared limits work across processes and restarts."""
+    window = int(recovery_now().replace(tzinfo=timezone.utc).timestamp()) // 900
+    key = hmac.new(
+        str(app.config["SECRET_KEY"]).encode(), f"{scope}:{identifier}".encode(), hashlib.sha256
+    ).hexdigest()
+    statement = sqlite_insert(RecoveryRateLimit).values(key=key, window=window, count=1)
+    statement = statement.on_conflict_do_update(
+        index_elements=[RecoveryRateLimit.key, RecoveryRateLimit.window],
+        set_={"count": RecoveryRateLimit.count + 1},
+        where=RecoveryRateLimit.count < limit,
+    )
+    allowed = db.session.execute(statement).rowcount == 1
+    RecoveryRateLimit.query.filter(RecoveryRateLimit.window < window - 1).delete()
+    PasswordResetToken.query.filter(PasswordResetToken.expires_at < recovery_now()).delete()
+    db.session.commit()
+    return allowed
+
+
+def pending_password_reset():
+    token_hash = session.get("password_reset_hash")
+    if not token_hash:
+        return None, None
+    reset = PasswordResetToken.query.filter_by(token_hash=token_hash, used_at=None).first()
+    if reset is None or reset.expires_at <= recovery_now():
+        return None, None
+    user = db.session.get(User, reset.user_id)
+    if user is None or hashlib.sha256(user.password_hash.encode()).hexdigest() != reset.password_fingerprint:
+        return None, None
+    return reset, user
+
+
+@app.after_request
+def protect_password_pages(response):
+    if request.endpoint in {"forgot_password", "reset_password", "change_password"}:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
 @app.route("/forgot_password", methods=["GET", "POST"])
 def forgot_password():
+    if current_user.is_authenticated:
+        return redirect(url_for("change_password"))
+    configured = recovery_configured(app.config)
+    recovery_csrf_token()
+    if request.method == "POST" and configured:
+        if not recovery_csrf_valid():
+            flash("This form has expired. Please try again.", "warning")
+            return render_template("forgot_password.html", recovery_enabled=True), 400
+        email = request.form.get("email", "").strip().lower()
+        if not email or len(email) > 120 or "@" not in email:
+            flash("Please enter your registered email address.", "danger")
+            return render_template("forgot_password.html", recovery_enabled=True), 400
+        ip_allowed = allow_recovery_attempt("request-ip", request.remote_addr or "unknown", 10)
+        if not ip_allowed:
+            flash("Too many requests. Please wait 15 minutes and try again.", "warning")
+            return render_template("forgot_password.html", recovery_enabled=True), 429
+        email_allowed = allow_recovery_attempt("request-email", email, 3)
+        if email_allowed:
+            # Refuse ambiguous legacy accounts differing only in email case.
+            users = User.query.filter(func.lower(User.email) == email).limit(2).all()
+            if len(users) == 1:
+                user = users[0]
+                token = secrets.token_urlsafe(32)
+                reset = PasswordResetToken(
+                    user_id=user.id,
+                    token_hash=hashlib.sha256(token.encode()).hexdigest(),
+                    password_fingerprint=hashlib.sha256(user.password_hash.encode()).hexdigest(),
+                    expires_at=recovery_now() + timedelta(minutes=30),
+                )
+                db.session.add(reset)
+                db.session.commit()
+                reset_url = app.config["PUBLIC_BASE_URL"].rstrip("/") + url_for("reset_password", token=token)
+                try:
+                    send_password_reset_email(app.config, user.email, reset_url)
+                except Exception as exc:
+                    # Never log SMTP exception text: it may contain addresses or secrets.
+                    app.logger.error("Password recovery delivery failed (%s)", type(exc).__name__)
+                    reset.used_at = recovery_now()
+                    db.session.commit()
+        flash("If an account exists for that email, we have sent a password reset link. Check your inbox and spam folder. The link expires in 30 minutes.", "success")
+        return redirect(url_for("forgot_password"))
+    return render_template("forgot_password.html", recovery_enabled=configured)
+
+
+@app.route("/reset_password", methods=["GET", "POST"])
+def reset_password():
+    recovery_csrf_token()
+    if request.method == "GET" and "token" in request.args:
+        token = request.args.get("token", "")
+        session["password_reset_hash"] = hashlib.sha256(token.encode()).hexdigest() if len(token) == 43 else "invalid"
+        # Exchange the link for a session-bound form and remove the token from the URL.
+        return redirect(url_for("reset_password"))
+    reset, user = pending_password_reset()
+    if reset is None:
+        session.pop("password_reset_hash", None)
+        return render_template("reset_password.html", valid_link=False), 400
     if request.method == "POST":
-        identifier = request.form.get("identifier", "").strip()
-        user = User.query.filter((User.email == identifier) | (User.phone == identifier)).first()
-        if user is None:
-            flash("No account matched that email or phone number", "danger")
-            return render_template("forgot_password.html")
-        user.set_password("reset123")
-        db.session.commit()
-        flash("Password reset successful. Your temporary password is reset123", "success")
-        return redirect(url_for("login"))
-    return render_template("forgot_password.html")
+        if not recovery_csrf_valid():
+            flash("This form has expired. Please try again.", "warning")
+            return render_template("reset_password.html", valid_link=True), 400
+        if not allow_recovery_attempt("reset-ip", request.remote_addr or "unknown", 20):
+            flash("Too many attempts. Please wait 15 minutes and try again.", "warning")
+            return render_template("reset_password.html", valid_link=True), 429
+        # The rate-limit transaction may have refreshed the user after a password
+        # change in another process. Revalidate the link against that latest state.
+        reset, user = pending_password_reset()
+        if reset is None:
+            session.pop("password_reset_hash", None)
+            return render_template("reset_password.html", valid_link=False), 400
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if not 12 <= len(new_password) <= 128:
+            flash("Choose a new password between 12 and 128 characters.", "danger")
+        elif new_password != confirm_password:
+            flash("The new passwords do not match.", "danger")
+        elif user.check_password(new_password):
+            flash("Choose a password different from your current password.", "danger")
+        else:
+            old_hash = user.password_hash
+            new_hash = generate_password_hash(new_password)
+            # Claim the token and update the password in one transaction. Concurrent
+            # submissions can never reuse a token or overwrite a newer password.
+            claimed = PasswordResetToken.query.filter(
+                PasswordResetToken.id == reset.id,
+                PasswordResetToken.used_at.is_(None),
+                PasswordResetToken.expires_at > recovery_now(),
+            ).update({"used_at": recovery_now()}, synchronize_session=False)
+            changed = User.query.filter_by(id=user.id, password_hash=old_hash).update(
+                {"password_hash": new_hash}, synchronize_session=False
+            ) if claimed == 1 else 0
+            if claimed != 1 or changed != 1:
+                db.session.rollback()
+                session.pop("password_reset_hash", None)
+                return render_template("reset_password.html", valid_link=False), 400
+            db.session.commit()
+            logout_user()
+            session.pop("password_reset_hash", None)
+            session.pop("recovery_csrf", None)
+            flash("Your password has been reset. Please log in with your new password. Other devices have been signed out.", "success")
+            return redirect(url_for("login"))
+    return render_template("reset_password.html", valid_link=True)
+
+
+@app.route("/change_password", methods=["GET", "POST"])
+@login_required
+def change_password():
+    if "password_change_csrf" not in session:
+        session["password_change_csrf"] = secrets.token_urlsafe(32)
+
+    if request.method == "POST":
+        submitted_token = request.form.get("csrf_token", "")
+        if not secrets.compare_digest(session["password_change_csrf"].encode(), submitted_token.encode()):
+            flash("This form has expired. Please try again.", "warning")
+            session["password_change_csrf"] = secrets.token_urlsafe(32)
+            return render_template("change_password.html"), 400
+
+        current_password = request.form.get("current_password", "")
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        if not current_user.check_password(current_password):
+            flash("Your current password is incorrect. Please try again.", "danger")
+        elif not 12 <= len(new_password) <= 128:
+            flash("Choose a new password between 12 and 128 characters.", "danger")
+        elif new_password != confirm_password:
+            flash("The new passwords do not match.", "danger")
+        elif current_user.check_password(new_password):
+            flash("Choose a password different from your current password.", "danger")
+        else:
+            current_user.set_password(new_password)
+            db.session.commit()
+            session.pop("password_change_csrf", None)
+            logout_user()
+            flash("Your password has been changed. Please log in with your new password.", "success")
+            return redirect(url_for("login"))
+
+    return render_template("change_password.html")
 
 
 @app.route("/competitions")

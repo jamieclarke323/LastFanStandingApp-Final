@@ -195,6 +195,24 @@ input::placeholder {
   color: #8f98b4;
 }
 
+.password-change-card {
+  max-width: 620px;
+  margin: 0 auto 1rem;
+}
+
+.password-visibility-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+}
+
+.password-visibility-toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
 button {
   cursor: pointer;
 }

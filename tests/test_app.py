@@ -275,9 +275,10 @@ def test_admin_can_submit_fixture_result(client):
         user.set_password('password123')
         db.session.add(user)
         db.session.commit()
+        login_identifier = user.get_id()
 
     with client.session_transaction() as session:
-        session['_user_id'] = '1'
+        session['_user_id'] = login_identifier
         session['_fresh'] = True
 
     response = client.post('/admin/results', data={

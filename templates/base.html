@@ -28,6 +28,7 @@
         {% if current_user.is_authenticated %}
           <a href="{{ view_selections_url if view_selections_url else url_for('competitions') }}">View Picks</a>
           <a href="{{ submit_pick_url if submit_pick_url else url_for('competitions') }}">Submit Pick</a>
+          <a href="{{ url_for('change_password') }}">Change password</a>
           {% if notifications_enabled %}
           <a href="{{ url_for('notifications') }}">Notifications</a>
           {% endif %}
