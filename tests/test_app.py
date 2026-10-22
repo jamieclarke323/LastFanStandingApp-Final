@@ -269,6 +269,63 @@ def test_upcoming_matchweek_helper_returns_next_pending_week():
     assert get_upcoming_matchweek(datetime(2026, 8, 22, 12, 0)) == 2
 
 
+def test_matchweek_deadline_uses_requested_gmt_cutoffs(monkeypatch):
+    import app as app_module
+    from app import get_matchweek_deadline
+
+    monkeypatch.setattr(app_module, 'FIXTURES_BY_MATCHWEEK', [
+        {
+            'matchweek': 1,
+            'fixtures': [
+                {
+                    'home_team': 'Arsenal',
+                    'away_team': 'Coventry',
+                    'location': 'Test Ground',
+                    'date': '10/01/2030 20:00',
+                },
+            ],
+        },
+        {
+            'matchweek': 2,
+            'fixtures': [
+                {
+                    'home_team': 'Arsenal',
+                    'away_team': 'Coventry',
+                    'location': 'Test Ground',
+                    'date': '17/01/2030 12:30',
+                },
+            ],
+        },
+        {
+            'matchweek': 3,
+            'fixtures': [
+                {
+                    'home_team': 'Arsenal',
+                    'away_team': 'Coventry',
+                    'location': 'Test Ground',
+                    'date': '10/07/2030 20:00',
+                },
+            ],
+        },
+        {
+            'matchweek': 4,
+            'fixtures': [
+                {
+                    'home_team': 'Arsenal',
+                    'away_team': 'Coventry',
+                    'location': 'Test Ground',
+                    'date': '17/07/2030 12:30',
+                },
+            ],
+        },
+    ])
+
+    assert get_matchweek_deadline(1) == datetime(2030, 1, 10, 18, 0)
+    assert get_matchweek_deadline(2) == datetime(2030, 1, 17, 10, 0)
+    assert get_matchweek_deadline(3) == datetime(2030, 7, 10, 18, 0)
+    assert get_matchweek_deadline(4) == datetime(2030, 7, 17, 10, 0)
+
+
 def test_admin_can_submit_fixture_result(client):
     with app.app_context():
         user = User(name='Admin', email='admin@example.com', phone='01111111111', is_admin=True)

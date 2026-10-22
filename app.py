@@ -456,6 +456,19 @@ def get_matchweek_kickoff(matchweek: int):
     return fixture_index["kickoffs"].get(matchweek)
 
 
+def get_matchweek_deadline(matchweek: int) -> datetime | None:
+    kickoff = get_matchweek_kickoff(matchweek)
+    if kickoff is None:
+        return None
+
+    uk_kickoff = kickoff.replace(tzinfo=timezone.utc).astimezone(UK_TIMEZONE)
+    if uk_kickoff.hour == 20 and uk_kickoff.minute == 0:
+        return kickoff.replace(hour=18, minute=0, second=0, microsecond=0)
+    if uk_kickoff.hour == 12 and uk_kickoff.minute == 30:
+        return kickoff.replace(hour=10, minute=0, second=0, microsecond=0)
+    return kickoff - timedelta(hours=1)
+
+
 def get_upcoming_matchweek(now: datetime | None = None) -> int:
     current_time = now or datetime.utcnow()
     fixture_index = get_fixture_index()
@@ -1064,7 +1077,9 @@ def check_and_send_deadline_notifications(now: datetime | None = None) -> None:
         if kickoff is None:
             continue
 
-        deadline = kickoff - timedelta(hours=1)
+        deadline = get_matchweek_deadline(matchweek)
+        if deadline is None:
+            continue
 
         if current_time >= deadline - timedelta(hours=48):
             _send_notifications_for_type(
@@ -1140,8 +1155,7 @@ def home():
         resolve_completed_matchweeks_for_competition_if_due(competition)
         current_week = max(competition.start_matchweek, get_upcoming_matchweek(datetime.utcnow()))
         selection = Selection.query.filter_by(competition_id=competition.id, user_id=current_user.id, matchweek=current_week).first()
-        deadline = get_matchweek_kickoff(current_week)
-        deadline_label = deadline - timedelta(hours=1) if deadline else None
+        deadline_label = get_matchweek_deadline(current_week)
         if selection is not None:
             current_week_data = get_matchweek_data(current_week)
             fixture = next((item for item in current_week_data["fixtures"] if item["home"] == selection.team_name or item["away"] == selection.team_name), None)
@@ -1646,16 +1660,14 @@ def view_selections(competition_id: int, matchweek: int):
 
     matchweek = max(matchweek, competition.start_matchweek)
     week_data = get_matchweek_data(matchweek)
-    kickoff_time = get_matchweek_kickoff(matchweek)
-    deadline = kickoff_time - timedelta(hours=1) if kickoff_time else None
+    deadline = get_matchweek_deadline(matchweek)
     now = datetime.utcnow()
     current_week_revealed = deadline is not None and now >= deadline
     weeks = [week for week in all_matchweeks if competition.start_matchweek <= week <= matchweek]
 
     week_revealed_map: dict[int, bool] = {}
     for week in weeks:
-        week_kickoff = get_matchweek_kickoff(week)
-        week_deadline = week_kickoff - timedelta(hours=1) if week_kickoff else None
+        week_deadline = get_matchweek_deadline(week)
         week_revealed_map[week] = week_deadline is not None and now >= week_deadline
 
     selections = Selection.query.filter(
@@ -1774,8 +1786,7 @@ def submit_pick(competition_id: int, matchweek: int):
 
     resolve_completed_matchweeks_for_competition_if_due(competition)
     week_data = get_matchweek_data(matchweek)
-    kickoff = get_matchweek_kickoff(matchweek)
-    deadline = kickoff - timedelta(hours=1) if kickoff else None
+    deadline = get_matchweek_deadline(matchweek)
     picks_locked = deadline is not None and datetime.utcnow() >= deadline
     pick_fixtures = []
     for fixture in week_data["fixtures"]:
