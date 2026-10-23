@@ -56,11 +56,13 @@ Recovery stays disabled until all required configuration is present. No real ema
 ### Gmail setup for lastfanstanding.uk
 1. Sign in to the Google account you want to send from. Open **Google Account → Security → 2-Step Verification** and enable it.
 2. Open Google's **App passwords** page at https://myaccount.google.com/apppasswords, create an app password named **Last Fan Standing**, and enter it directly in your private hosting configuration. Do not use your normal Google password. App passwords may be unavailable on restricted/managed accounts.
-3. Set `LFS_PUBLIC_BASE_URL` to `https://lastfanstanding.uk` (without `/login`), `LFS_SMTP_HOST` to `smtp.gmail.com`, `LFS_SMTP_PORT` to `587`, and `LFS_SMTP_SSL` to `0`.
+3. Set `LFS_PUBLIC_BASE_URL` to `https://www.lastfanstanding.uk` (without `/login`), `LFS_SMTP_HOST` to `smtp.gmail.com`, `LFS_SMTP_PORT` to `587`, and `LFS_SMTP_SSL` to `0`.
 4. Set `LFS_SMTP_USERNAME` to the full Gmail/Google Workspace email address, `LFS_SMTP_PASSWORD` to the app password, and `LFS_SMTP_FROM` to that same email address (or a sender alias already verified in Gmail). Do not invent a `no-reply@lastfanstanding.uk` sender unless it is configured and verified for that account.
 5. Keep a private, stable `LFS_SECRET_KEY` at least 32 characters long. Reload the hosted app, then test with an existing registered account from the live login page.
 
 Gmail has sending limits and is suitable for low-volume use; consider a transactional email provider as usage grows. If the host blocks outbound SMTP or Google rejects credentials, real email delivery cannot be fixed by the app alone—check hosting permissions and the Google account settings.
+
+If an emailed reset link returns 404, check its hostname without sharing the token. The app is hosted at `www.lastfanstanding.uk`; the bare-domain redirect must preserve paths and query strings to support links such as `/reset_password?token=...`. Until that redirect is configured, use `https://www.lastfanstanding.uk` for `LFS_PUBLIC_BASE_URL`. Update the value in the private WSGI configuration before importing the app, reload the hosted app, and request a fresh reset email. For an existing, unexpired link, adding `www.` to the hostname while leaving the path and token unchanged opens the same reset flow.
 
 Links expire after 30 minutes; only hashed tokens are stored. Opening a link does not consume it (email scanners are safe). A successful reset invalidates all other links issued before that password change. Requests are limited to 10 per IP and 3 per email per 15-minute fixed window; password submissions to 20 per IP per window. Limits are stored in SQLite and survive restarts. The app uses `request.remote_addr`, not untrusted forwarded headers; configure a trusted proxy explicitly if your host supplies a proxy address, otherwise clients may share a limit.
 
