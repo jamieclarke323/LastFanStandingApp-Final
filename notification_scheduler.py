@@ -1,4 +1,6 @@
-from app import app, check_and_send_deadline_notifications
+"""Legacy entry point - kept so any existing scheduled task keeps working.
+Delegates to run_notification_job so there is a single, locked job implementation."""
+from run_notification_job import main
 
-with app.app_context():
-    check_and_send_deadline_notifications()
+if __name__ == "__main__":
+    raise SystemExit(main())

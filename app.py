@@ -230,21 +230,44 @@ class NotificationPreference(db.Model):
     deadline_24h = db.Column(db.Boolean, default=False)
     deadline_passed = db.Column(db.Boolean, default=False)
     results_confirmed = db.Column(db.Boolean, default=False)
+    # Set the first time the user enables push or saves the form; until then the first
+    # successful device activation switches all four categories on by default.
+    activated_at = db.Column(db.DateTime, nullable=True)
 
 
 class NotificationLog(db.Model):
+    """One row per user / competition / matchweek / category: the event has been raised
+    for that user. Per-device outcomes live in NotificationDelivery."""
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     competition_id = db.Column(db.Integer, db.ForeignKey("competition.id"), nullable=False, index=True)
     matchweek = db.Column(db.Integer, nullable=False)
     notification_type = db.Column(db.String(30), nullable=False)
     sent_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # The matchweek deadline this notification was raised for. If an admin later moves the
+    # fixture (new deadline), the row is reset and the notification can go out again.
+    deadline_at = db.Column(db.DateTime, nullable=True)
 
     __table_args__ = (
         db.UniqueConstraint(
             "user_id", "competition_id", "matchweek", "notification_type",
             name="uix_notification_log",
         ),
+    )
+
+
+class NotificationDelivery(db.Model):
+    """Per-device delivery record for a NotificationLog entry."""
+    id = db.Column(db.Integer, primary_key=True)
+    log_id = db.Column(db.Integer, db.ForeignKey("notification_log.id"), nullable=False, index=True)
+    subscription_id = db.Column(db.Integer, db.ForeignKey("push_subscription.id"), nullable=False, index=True)
+    status = db.Column(db.String(10), nullable=False)  # sent | failed
+    attempts = db.Column(db.Integer, nullable=False, default=0)
+    last_error = db.Column(db.String(200), nullable=True)
+    last_attempt_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("log_id", "subscription_id", name="uix_notification_delivery"),
     )
 
 
@@ -732,6 +755,40 @@ def ensure_performance_indexes() -> None:
     db.session.commit()
 
 
+def ensure_schema_upgrades() -> None:
+    """Add columns introduced after a database was first created.
+
+    db.create_all() never alters existing tables, so new nullable columns are added
+    here with ALTER TABLE. Each step is skipped once the column exists, making this
+    safe to run on every start-up against a live SQLite database.
+    """
+    upgrades = [
+        ("notification_log", "deadline_at", "ALTER TABLE notification_log ADD COLUMN deadline_at DATETIME"),
+        ("notification_preference", "activated_at", "ALTER TABLE notification_preference ADD COLUMN activated_at DATETIME"),
+    ]
+    for table, column, statement in upgrades:
+        existing_columns = {
+            row[1] for row in db.session.execute(db.text(f"PRAGMA table_info({table})")).fetchall()
+        }
+        if not existing_columns or column in existing_columns:
+            continue
+        db.session.execute(db.text(statement))
+        if table == "notification_preference":
+            # Rows that predate the "first activation" concept keep their current choices.
+            db.session.execute(db.text(
+                "UPDATE notification_preference SET activated_at = CURRENT_TIMESTAMP WHERE activated_at IS NULL"
+            ))
+    db.session.commit()
+
+
+def prepare_database() -> None:
+    """Create any missing tables/indexes/columns. Used by the web app on first request
+    and by the scheduled notification job, so both see the same schema."""
+    db.create_all()
+    ensure_performance_indexes()
+    ensure_schema_upgrades()
+
+
 def initialise_admin_if_needed() -> None:
     if User.query.count() == 0:
         admin = User(name="Admin", email="admin@example.com", phone="00000000000", is_admin=True)
@@ -991,131 +1048,317 @@ def resolve_completed_matchweeks_for_competition_if_due(
     resolve_completed_matchweeks_for_competition(competition, now=now)
 
 
-def send_push_notification(user: "User", title: str, body: str, url: str = "/") -> None:
-    subscriptions = PushSubscription.query.filter_by(user_id=user.id).all()
-    for subscription in subscriptions:
-        try:
-            webpush(
-                subscription_info={
-                    "endpoint": subscription.endpoint,
-                    "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth},
-                },
-                data=json.dumps({"title": title, "body": body, "url": url}),
-                vapid_private_key=get_vapid_private_key_pem(),
-                vapid_claims={"sub": VAPID_CLAIM_EMAIL},
-            )
-        except WebPushException as exc:
-            status_code = exc.response.status_code if exc.response is not None else None
-            if status_code in (404, 410):
-                # Subscription is no longer valid (browser unsubscribed or expired).
-                db.session.delete(subscription)
-                db.session.commit()
+NOTIFICATION_TYPES = ("deadline_48h", "deadline_24h", "deadline_passed", "results_confirmed")
+
+# Who may receive each notification category. Deadline reminders go only to players
+# still in the competition who have not yet picked; "selections viewable" goes to every
+# member (eliminated players included); "new matchweek open" goes to players still in.
+NOTIFICATION_RULES: dict[str, dict[str, bool]] = {
+    "deadline_48h": {"requires_lives": True, "requires_no_pick": True},
+    "deadline_24h": {"requires_lives": True, "requires_no_pick": True},
+    "deadline_passed": {"requires_lives": False, "requires_no_pick": False},
+    "results_confirmed": {"requires_lives": True, "requires_no_pick": False},
+}
+
+# How long after a deadline passes the "selections viewable" notification may still be
+# raised. Covers an hourly scheduler running late without flooding late joiners with
+# old events.
+SELECTIONS_VIEWABLE_GRACE = timedelta(hours=6)
+
+# Transient push failures (network errors, 5xx, 429) are retried on later scheduler
+# runs up to this many attempts per device.
+MAX_DELIVERY_ATTEMPTS = 3
 
 
-def get_notification_target_url() -> str:
-    return "/"
+def get_notification_target_url(notification_type: str, competition: Competition, matchweek: int) -> str:
+    if notification_type == "deadline_passed":
+        return f"/view_selections/{competition.id}/{matchweek}"
+    return f"/submit_pick/{competition.id}/{matchweek}"
+
+
+def build_notification_message(notification_type: str, competition: Competition, matchweek: int) -> dict | None:
+    """Title/body/url for a notification. Returns None when the event cannot apply
+    (e.g. no matchweek follows a confirmed one). Shared by the scheduler and the
+    admin test tool so test sends look exactly like real ones."""
+    if notification_type == "deadline_48h":
+        return {
+            "title": "48 hours left to make your pick! ⚽",
+            "body": f"Don't forget to choose your winning team for {competition.name} "
+                    f"(Matchweek {matchweek}) before the deadline.",
+            "url": get_notification_target_url(notification_type, competition, matchweek),
+        }
+    if notification_type == "deadline_24h":
+        return {
+            "title": "Just 24 hours until the deadline! ⏳",
+            "body": f"Make sure your {competition.name} selection for Matchweek {matchweek} "
+                    f"is locked in before time runs out.",
+            "url": get_notification_target_url(notification_type, competition, matchweek),
+        }
+    if notification_type == "deadline_passed":
+        return {
+            "title": "The picks are in! 👀",
+            "body": f"Everyone's {competition.name} selections for Matchweek {matchweek} "
+                    f"are now available to view.",
+            "url": get_notification_target_url(notification_type, competition, matchweek),
+        }
+    if notification_type == "results_confirmed":
+        all_matchweeks = get_fixture_index()["all_matchweeks"]
+        next_matchweek = next((week for week in all_matchweeks if week > matchweek), None)
+        if next_matchweek is None:
+            return None
+        return {
+            "title": "A new week is open! 🏆",
+            "body": f"Matchweek {matchweek} results are confirmed - time to choose your next winning team "
+                    f"for {competition.name} (Matchweek {next_matchweek}).",
+            "url": get_notification_target_url(notification_type, competition, next_matchweek),
+        }
+    raise ValueError(f"Unknown notification type: {notification_type}")
+
+
+def deliver_push(subscription: "PushSubscription", title: str, body: str, url: str) -> tuple[str, str | None]:
+    """Send one push message to one device.
+
+    Returns ("sent", None), ("invalid", reason) when the push service says the
+    subscription is gone (caller should delete it), or ("failed", reason) for a
+    transient problem worth retrying later.
+    """
+    try:
+        webpush(
+            subscription_info={
+                "endpoint": subscription.endpoint,
+                "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth},
+            },
+            data=json.dumps({"title": title, "body": body, "url": url}),
+            vapid_private_key=get_vapid_private_key_pem(),
+            vapid_claims={"sub": VAPID_CLAIM_EMAIL},
+        )
+    except WebPushException as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in (404, 410):
+            return "invalid", f"HTTP {status_code}"
+        return "failed", f"HTTP {status_code}" if status_code else str(exc)[:200]
+    except Exception as exc:  # network errors etc. - never let one device abort the run
+        return "failed", str(exc)[:200]
+    return "sent", None
+
+
+def send_push_notification(user: "User", title: str, body: str, url: str = "/") -> list[dict]:
+    """Send a one-off message to every device a user has registered (used by the admin
+    test tool). Invalid subscriptions are removed. Returns one result per device."""
+    results = []
+    for subscription in PushSubscription.query.filter_by(user_id=user.id).all():
+        status, error = deliver_push(subscription, title, body, url)
+        results.append({"endpoint": subscription.endpoint, "status": status, "error": error})
+        if status == "invalid":
+            _delete_subscription(subscription)
+    db.session.commit()
+    return results
+
+
+def _delete_subscription(subscription: "PushSubscription") -> None:
+    NotificationDelivery.query.filter_by(subscription_id=subscription.id).delete()
+    db.session.delete(subscription)
+
+
+def is_member_eligible_for_notification(
+    member: "CompetitionMember",
+    notification_type: str,
+    has_selection: bool,
+) -> bool:
+    """Per-competition eligibility check, evaluated against the member's current lives.
+
+    Callers must have already run resolve_completed_matchweeks_for_competition so that
+    member.lives reflects the app's authoritative calculation (including restored lives).
+    """
+    rules = NOTIFICATION_RULES[notification_type]
+    if rules["requires_lives"] and member.lives <= 0:
+        return False
+    if rules["requires_no_pick"] and has_selection:
+        return False
+    return True
 
 
 def _send_notifications_for_type(
     competition: Competition,
     matchweek: int,
     notification_type: str,
-    title: str,
-    body: str,
-    require_no_pick: bool,
+    message: dict,
+    deadline_at: datetime | None = None,
+    now: datetime | None = None,
 ) -> None:
-    members = CompetitionMember.query.filter_by(competition_id=competition.id, active=True).all()
+    """Raise one notification event for every eligible member and deliver it to each of
+    their devices, recording the outcome per device.
+
+    Idempotent: a member/competition/matchweek/type/deadline combination is raised once.
+    Re-running only retries devices whose earlier attempt failed transiently. If the
+    matchweek deadline has moved since the event was raised, it is raised again for the
+    new deadline.
+    """
+    current_time = now or datetime.utcnow()
+
+    # Refresh lives at the moment of dispatch so eligibility never relies on a stale value.
+    resolve_completed_matchweeks_for_competition(competition, now=current_time)
+
+    members = CompetitionMember.query.filter_by(competition_id=competition.id).all()
+    if not members:
+        return
+    user_ids = [member.user_id for member in members]
+
+    preferences_by_user = {
+        item.user_id: item
+        for item in NotificationPreference.query.filter(NotificationPreference.user_id.in_(user_ids)).all()
+    }
+    logs_by_user = {
+        item.user_id: item
+        for item in NotificationLog.query.filter_by(
+            competition_id=competition.id,
+            matchweek=matchweek,
+            notification_type=notification_type,
+        ).all()
+    }
+    deliveries_by_log: dict[int, dict[int, NotificationDelivery]] = {}
+    if logs_by_user:
+        log_ids = [item.id for item in logs_by_user.values()]
+        for delivery in NotificationDelivery.query.filter(NotificationDelivery.log_id.in_(log_ids)).all():
+            deliveries_by_log.setdefault(delivery.log_id, {})[delivery.subscription_id] = delivery
+    selected_user_ids = {
+        item.user_id
+        for item in Selection.query.filter_by(competition_id=competition.id, matchweek=matchweek).all()
+    }
+    subscriptions_by_user: dict[int, list[PushSubscription]] = {}
+    for subscription in PushSubscription.query.filter(PushSubscription.user_id.in_(user_ids)).all():
+        subscriptions_by_user.setdefault(subscription.user_id, []).append(subscription)
+
     for member in members:
-        preference = NotificationPreference.query.filter_by(user_id=member.user_id).first()
+        preference = preferences_by_user.get(member.user_id)
         if preference is None or not getattr(preference, notification_type):
             continue
 
-        already_sent = NotificationLog.query.filter_by(
-            user_id=member.user_id,
-            competition_id=competition.id,
-            matchweek=matchweek,
-            notification_type=notification_type,
-        ).first()
-        if already_sent:
-            continue
-
-        if require_no_pick:
-            has_pick = Selection.query.filter_by(
-                competition_id=competition.id,
-                user_id=member.user_id,
-                matchweek=matchweek,
-            ).first()
-            if has_pick:
+        log = logs_by_user.get(member.user_id)
+        deadline_changed = (
+            log is not None
+            and deadline_at is not None
+            and log.deadline_at is not None
+            and log.deadline_at != deadline_at
+        )
+        if log is not None and not deadline_changed:
+            pending = [
+                delivery for delivery in deliveries_by_log.get(log.id, {}).values()
+                if delivery.status == "failed" and delivery.attempts < MAX_DELIVERY_ATTEMPTS
+            ]
+            if not pending:
                 continue
 
-        user = User.query.get(member.user_id)
-        if user is None:
+        if not is_member_eligible_for_notification(
+            member, notification_type, has_selection=member.user_id in selected_user_ids,
+        ):
             continue
 
-        send_push_notification(user, title, body, url=get_notification_target_url())
-        db.session.add(NotificationLog(
-            user_id=member.user_id,
-            competition_id=competition.id,
-            matchweek=matchweek,
-            notification_type=notification_type,
-        ))
+        if log is None:
+            log = NotificationLog(
+                user_id=member.user_id,
+                competition_id=competition.id,
+                matchweek=matchweek,
+                notification_type=notification_type,
+                sent_at=current_time,
+                deadline_at=deadline_at,
+            )
+            db.session.add(log)
+            db.session.flush()
+            logs_by_user[member.user_id] = log
+            deliveries_by_log[log.id] = {}
+        elif deadline_changed:
+            NotificationDelivery.query.filter_by(log_id=log.id).delete()
+            deliveries_by_log[log.id] = {}
+            log.sent_at = current_time
+            log.deadline_at = deadline_at
+            db.session.flush()
+
+        existing_deliveries = deliveries_by_log.setdefault(log.id, {})
+        for subscription in list(subscriptions_by_user.get(member.user_id, [])):
+            delivery = existing_deliveries.get(subscription.id)
+            if delivery is None:
+                # Devices registered after the event was raised don't get old notifications.
+                if subscription.created_at is not None and subscription.created_at > log.sent_at:
+                    continue
+                delivery = NotificationDelivery(log_id=log.id, subscription_id=subscription.id, status="failed", attempts=0)
+                db.session.add(delivery)
+                existing_deliveries[subscription.id] = delivery
+            elif delivery.status == "sent" or delivery.attempts >= MAX_DELIVERY_ATTEMPTS:
+                continue
+
+            status, error = deliver_push(subscription, message["title"], message["body"], message["url"])
+            delivery.attempts += 1
+            delivery.last_attempt_at = current_time
+            delivery.last_error = error
+            if status == "sent":
+                delivery.status = "sent"
+            elif status == "invalid":
+                subscriptions_by_user[member.user_id].remove(subscription)
+                existing_deliveries.pop(subscription.id, None)
+                _delete_subscription(subscription)
+            else:
+                delivery.status = "failed"
 
     db.session.commit()
 
 
 def check_and_send_deadline_notifications(now: datetime | None = None) -> None:
-    """Send opt-in 48hr/24hr/deadline-passed reminders for each competition's
-    current matchweek. Safe to call repeatedly (e.g. from a periodic
-    scheduler) - NotificationLog prevents duplicate sends."""
+    """Raise the time-based notifications for every competition and matchweek that is
+    currently inside one of these windows (deadline D):
+
+      48h reminder          D-48h <= now < D-24h
+      24h reminder          D-24h <= now < D
+      selections viewable   D     <= now < D + SELECTIONS_VIEWABLE_GRACE
+
+    The windows are wide enough for an hourly scheduler and nothing is sent once the
+    deadline has passed, so a late run never produces a stale reminder. Safe to call
+    repeatedly: NotificationLog/NotificationDelivery make it idempotent and eligibility
+    is re-checked on every run."""
     if not NOTIFICATIONS_ENABLED:
         return
 
     current_time = now or datetime.utcnow()
-    for competition in Competition.query.all():
-        matchweek = max(competition.start_matchweek, get_upcoming_matchweek(current_time))
-        kickoff = get_matchweek_kickoff(matchweek)
-        if kickoff is None:
-            continue
+    all_matchweeks = get_fixture_index()["all_matchweeks"]
+    competitions = Competition.query.all()
 
+    for matchweek in all_matchweeks:
         deadline = get_matchweek_deadline(matchweek)
         if deadline is None:
             continue
 
-        if current_time >= deadline - timedelta(hours=48):
-            _send_notifications_for_type(
-                competition, matchweek, "deadline_48h",
-                title="48 hours to go!",
-                body=f"You have 48 hours left to submit your Matchweek {matchweek} pick.",
-                require_no_pick=True,
-            )
+        due_types = []
+        if deadline - timedelta(hours=48) <= current_time < deadline - timedelta(hours=24):
+            due_types.append("deadline_48h")
+        if deadline - timedelta(hours=24) <= current_time < deadline:
+            due_types.append("deadline_24h")
+        if deadline <= current_time < deadline + SELECTIONS_VIEWABLE_GRACE:
+            due_types.append("deadline_passed")
+        if not due_types:
+            continue
 
-        if current_time >= deadline - timedelta(hours=24):
-            _send_notifications_for_type(
-                competition, matchweek, "deadline_24h",
-                title="24 hours to go!",
-                body=f"Just 24 hours left to submit your Matchweek {matchweek} pick.",
-                require_no_pick=True,
-            )
-
-        if current_time >= deadline:
-            _send_notifications_for_type(
-                competition, matchweek, "deadline_passed",
-                title="Selections are in!",
-                body=f"The deadline for Matchweek {matchweek} has passed - selections are now viewable.",
-                require_no_pick=False,
-            )
+        for competition in competitions:
+            if matchweek < competition.start_matchweek:
+                continue
+            for notification_type in due_types:
+                message = build_notification_message(notification_type, competition, matchweek)
+                _send_notifications_for_type(
+                    competition, matchweek, notification_type, message,
+                    deadline_at=deadline, now=current_time,
+                )
 
 
 def notify_results_confirmed(competition: Competition, matchweek: int) -> None:
+    """Called once every result for `matchweek` has been recorded: tells players still in
+    the competition that the following matchweek is open for selection."""
     if not NOTIFICATIONS_ENABLED:
         return
 
-    _send_notifications_for_type(
-        competition, matchweek, "results_confirmed",
-        title="Results confirmed",
-        body=f"Matchweek {matchweek} results are in - the next matchweek is open.",
-        require_no_pick=False,
-    )
+    message = build_notification_message("results_confirmed", competition, matchweek)
+    if message is None:
+        return
+
+    _send_notifications_for_type(competition, matchweek, "results_confirmed", message)
 
 
 @app.before_request
@@ -1129,8 +1372,7 @@ def ensure_database_ready() -> None:
         return
 
     with app.app_context():
-        db.create_all()
-        ensure_performance_indexes()
+        prepare_database()
         if not app.config.get("TESTING"):
             initialise_admin_if_needed()
 
@@ -2147,25 +2389,34 @@ def league_table():
     return render_template("league_table.html", table=table)
 
 
+def _get_or_create_preference(user_id: int) -> NotificationPreference:
+    preference = NotificationPreference.query.filter_by(user_id=user_id).first()
+    if preference is None:
+        preference = NotificationPreference(user_id=user_id)
+        db.session.add(preference)
+        db.session.commit()
+    return preference
+
+
+def _preference_payload(preference: NotificationPreference) -> dict:
+    return {name: bool(getattr(preference, name)) for name in NOTIFICATION_TYPES}
+
+
 @app.route("/notifications", methods=["GET", "POST"])
 @login_required
 def notifications():
     if not NOTIFICATIONS_ENABLED:
         abort(404)
 
-    preference = NotificationPreference.query.filter_by(user_id=current_user.id).first()
-    if preference is None:
-        preference = NotificationPreference(user_id=current_user.id)
-        db.session.add(preference)
-        db.session.commit()
+    preference = _get_or_create_preference(current_user.id)
 
     if request.method == "POST":
-        preference.deadline_48h = request.form.get("deadline_48h") == "on"
-        preference.deadline_24h = request.form.get("deadline_24h") == "on"
-        preference.deadline_passed = request.form.get("deadline_passed") == "on"
-        preference.results_confirmed = request.form.get("results_confirmed") == "on"
+        for name in NOTIFICATION_TYPES:
+            setattr(preference, name, request.form.get(name) == "on")
+        if preference.activated_at is None:
+            preference.activated_at = datetime.utcnow()
         db.session.commit()
-        flash("Notification preferences saved", "success")
+        flash("Preferences updated ✓", "success")
         return redirect(url_for("notifications"))
 
     return render_template(
@@ -2178,6 +2429,11 @@ def notifications():
 @app.route("/notifications/subscribe", methods=["POST"])
 @login_required
 def notifications_subscribe():
+    """Register (or refresh) this device's push subscription for the logged-in user.
+
+    The first time a user ever activates push, all four categories are switched on so
+    that enabling notifications does something useful straight away. After that their
+    saved choices are left untouched, however many devices they add."""
     if not NOTIFICATIONS_ENABLED:
         abort(404)
 
@@ -2202,8 +2458,53 @@ def notifications_subscribe():
         subscription.user_id = current_user.id
         subscription.p256dh = p256dh
         subscription.auth = auth
+
+    preference = _get_or_create_preference(current_user.id)
+    first_activation = preference.activated_at is None
+    if first_activation:
+        for name in NOTIFICATION_TYPES:
+            setattr(preference, name, True)
+        preference.activated_at = datetime.utcnow()
     db.session.commit()
+    return jsonify({
+        "status": "ok",
+        "first_activation": first_activation,
+        "preferences": _preference_payload(preference),
+    })
+
+
+@app.route("/notifications/unsubscribe", methods=["POST"])
+@login_required
+def notifications_unsubscribe():
+    """Remove this device's push subscription. Only the owning user may remove it."""
+    if not NOTIFICATIONS_ENABLED:
+        abort(404)
+
+    data = request.get_json(silent=True) or {}
+    endpoint = data.get("endpoint")
+    if not endpoint:
+        return jsonify({"error": "Missing endpoint"}), 400
+
+    subscription = PushSubscription.query.filter_by(endpoint=endpoint, user_id=current_user.id).first()
+    if subscription is not None:
+        _delete_subscription(subscription)
+        db.session.commit()
     return jsonify({"status": "ok"})
+
+
+@app.route("/notifications/status", methods=["POST"])
+@login_required
+def notifications_status():
+    """Tell the page whether the device's current subscription is known to the server."""
+    if not NOTIFICATIONS_ENABLED:
+        abort(404)
+
+    data = request.get_json(silent=True) or {}
+    endpoint = data.get("endpoint")
+    known = bool(endpoint) and PushSubscription.query.filter_by(
+        endpoint=endpoint, user_id=current_user.id,
+    ).first() is not None
+    return jsonify({"subscribed": known})
 
 
 @app.route("/notifications/vapid-public-key")

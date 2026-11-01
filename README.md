@@ -87,9 +87,9 @@ Treat reset links as credentials: redact `token` query parameters in reverse-pro
    ```bash
    export LFS_DB_PATH=/home/<your_pythonanywhere_username>/LastFanStandingApp/instance/last_fan_standing.db
    python - <<'PY'
-   from app import app, db
+   from app import app, prepare_database
    with app.app_context():
-      db.create_all()
+      prepare_database()
    print("Database initialized")
    PY
    ```
@@ -121,13 +121,64 @@ Treat reset links as credentials: redact `token` query parameters in reverse-pro
 
 8. Reload the web app from the Web tab.
 
-9. Notifications scheduling (important):
-   - APScheduler in app.py only runs when starting with python app.py.
-   - Under WSGI on PythonAnywhere, create a Scheduled task (every 15 minutes) that runs the helper script and writes to a proper log file:
+9. Push notifications - scheduled task (important):
+   - The in-process APScheduler in app.py only runs when you start the site with `python app.py`
+     (local use). Under WSGI on PythonAnywhere it does not run, so create a **Scheduled task**
+     (Tasks tab) running **hourly** with this command:
    ```bash
-   workon lfs-venv && cd /home/<your_pythonanywhere_username>/LastFanStandingApp && ./run_notification_job.sh
+   workon lfs-venv && cd /home/<your_pythonanywhere_username>/LastFanStandingApp && LFS_DB_PATH=/home/<your_pythonanywhere_username>/LastFanStandingApp/instance/last_fan_standing.db LFS_NOTIFICATIONS=1 ./run_notification_job.sh
    ```
-   - The helper script writes to instance/notifications.log so the scheduler never appends output to the Python file itself.
+   - The task must see the same `LFS_DB_PATH` as the WSGI file (environment variables set in the
+     WSGI file are *not* visible to scheduled tasks), and `LFS_NOTIFICATIONS=1`, otherwise it exits
+     silently without sending anything.
+   - Output goes to `instance/notifications.log`. A lock file (`instance/notification_job.lock`)
+     stops two runs overlapping. The job creates any missing tables/columns itself, so no manual
+     migration step is needed - but back up the database first:
+   ```bash
+   cp instance/last_fan_standing.db instance/last_fan_standing.backup-$(date +%Y%m%d).db
+   ```
+   - Hourly timing: reminders use wide windows (48h reminder: 24-48h before the deadline; 24h
+     reminder: 0-24h before; "selections revealed": up to 6h after) so an hourly task never misses
+     one, but a reminder can arrive up to an hour "late" relative to the exact 48h/24h mark.
+   - The VAPID key pair lives in `instance/vapid_private_key.pem` (created automatically, never
+     commit it). Keep the same file on PythonAnywhere or every device will have to re-enable.
+
+10. Who receives each notification (evaluated per competition, at the moment of sending, using the
+    app's own lives calculation):
+    - **48h / 24h deadline reminders** - opted-in members with more than 0 lives who have not yet
+      picked for that matchweek. The 48h window is `[deadline-48h, deadline-24h)`, the 24h
+      window is `[deadline-24h, deadline)`; nothing is sent once the deadline has passed. If an
+      admin moves a fixture (new deadline) the reminders are raised again for the new deadline.
+    - **Selections revealed** - every opted-in member of the competition, including eliminated
+      players, once the matchweek deadline has passed (within a 6h grace window).
+    - **New gameweek open** - opted-in members with more than 0 lives, sent when all results for a
+      matchweek are recorded and a following matchweek exists.
+    - Each category is controlled by its own checkbox; a player eliminated in one competition can
+      still be notified for another competition they are alive in.
+    - The first time a user enables push on any device all four categories are switched on; after
+      that their saved choices are never changed automatically. Devices registered after an event
+      was raised do not receive that old event.
+    - Delivery is recorded per device (`notification_delivery`). Transient push failures are
+      retried on later runs (max 3 attempts); subscriptions the push service reports as gone
+      (404/410) are deleted automatically.
+
+11. Sending a test notification to your own phone (admin, command line only - there is no web
+    route for this):
+   ```bash
+   workon lfs-venv && cd ~/LastFanStandingApp
+   export LFS_DB_PATH=/home/<your_pythonanywhere_username>/LastFanStandingApp/instance/last_fan_standing.db
+   python send_test_notification.py --email you@example.com --list
+   python send_test_notification.py --email you@example.com
+   python send_test_notification.py --email you@example.com --type deadline_48h --competition-id 1 --matchweek 12
+   ```
+   The `--type` variants use the exact wording and link of the real notification for that
+   competition/matchweek, go only to the named user, and are not recorded as real sends.
+
+12. Privacy: the app stores, per user, the four notification choices and for each enabled device a
+    browser push subscription (push-service URL plus two encryption keys - no device identifiers),
+    plus a per-device delivery log of which competition events were sent. Users opt out on the
+    Notifications page ("Disable on this device" removes the subscription; unticking all boxes
+    stops all sends). There is currently no privacy policy page in the app to update.
 
 ### Optional production settings
 - Keep LFS_NOTIFICATIONS=0 if you do not want push features live yet.

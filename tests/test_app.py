@@ -1551,7 +1551,11 @@ def _register_and_login(client, email, phone, first_name='Push', last_initial='N
     client.post('/login', data={'email': email, 'password': 'password123'})
 
 
-def test_notifications_page_requires_login(client):
+def test_notifications_page_requires_login(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, 'NOTIFICATIONS_ENABLED', True)
+
     response = client.get('/notifications', follow_redirects=True)
     assert response.status_code == 200
     assert b'Login' in response.data
@@ -1588,14 +1592,14 @@ def test_notifications_preferences_save_and_reload(client, monkeypatch):
 
     response = client.get('/notifications')
     assert response.status_code == 200
-    assert b'48 hour deadline warning' in response.data
+    assert b'48-hour deadline reminder' in response.data
 
     save_response = client.post('/notifications', data={
         'deadline_48h': 'on',
         'results_confirmed': 'on',
     }, follow_redirects=True)
     assert save_response.status_code == 200
-    assert b'Notification preferences saved' in save_response.data
+    assert 'Preferences updated ✓'.encode() in save_response.data
 
     with app.app_context():
         from app import NotificationPreference
@@ -1827,7 +1831,18 @@ def test_admin_results_triggers_results_confirmed_notification(client, monkeypat
                     'date': '01/01/2026 12:00',
                 }
             ],
-        }
+        },
+        {
+            'matchweek': 2,
+            'fixtures': [
+                {
+                    'home_team': 'Chelsea',
+                    'away_team': 'Everton',
+                    'location': 'Test Ground',
+                    'date': '08/01/2030 12:00',
+                }
+            ],
+        },
     ])
 
     sent_calls = []

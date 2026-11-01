@@ -1,120 +1,239 @@
 {% extends 'base.html' %}
 {% block content %}
   <div class="card notifications-card">
-    <h1>Notification preferences</h1>
+    <h1>Notifications</h1>
     <p class="page-intro">
-      *Notifications are not quite working yet - please bear with me while I sort this out.
-      Choose which reminders you'd like to receive. Notifications are entirely opt-in - you'll only be
-      sent the reminders you tick below, and only after you enable notifications on this device.
+      Choose which push notifications you'd like. They are entirely opt-in - you'll only be sent the
+      categories you tick below, and only on devices where you've enabled notifications. Your choices
+      apply to every competition you're in.
     </p>
 
     <div class="notification-device-status">
-      <button type="button" id="enable-push-button" class="button">Enable notifications on this device</button>
-      <p id="push-status" class="muted"></p>
+      <h2 class="notification-section-title">This device</h2>
+      <p id="push-status" class="muted">Checking notification support&hellip;</p>
       <p id="ios-instructions" class="muted notification-ios-note" style="display: none;">
-        On iPhone/iPad, push notifications only work once this site has been added to your Home Screen
-        (Share &rarr; Add to Home Screen) and opened from there. This requires iOS 16.4 or later - it is
-        an Apple platform limitation, not something this app can work around from a regular Safari tab.
+        On iPhone/iPad, push notifications only work once Last Fan Standing has been added to your Home
+        Screen (Share &rarr; Add to Home Screen) and opened from there. This needs iOS 16.4 or later -
+        it is an Apple restriction, not something the app can work around from a normal Safari tab.
       </p>
+      <p id="denied-instructions" class="muted notification-ios-note" style="display: none;">
+        Notifications are blocked for this site in your browser or device settings. Allow them there,
+        then come back and tap Enable Notifications.
+      </p>
+      <div class="notification-device-actions">
+        <button type="button" id="enable-push-button" class="button" style="display: none;">Enable Notifications</button>
+        <button type="button" id="disable-push-button" class="button secondary" style="display: none;">Disable on this device</button>
+      </div>
     </div>
 
-    <form method="post" class="notification-preferences-form">
+    <form method="post" class="notification-preferences-form" id="notification-preferences-form">
+      <h2 class="notification-section-title">What to send</h2>
       <label class="notification-toggle">
         <input type="checkbox" name="deadline_48h" {% if preference.deadline_48h %}checked{% endif %} />
-        <span>48 hour deadline warning</span>
+        <span>48-hour deadline reminder</span>
       </label>
       <label class="notification-toggle">
         <input type="checkbox" name="deadline_24h" {% if preference.deadline_24h %}checked{% endif %} />
-        <span>24 hour deadline warning</span>
+        <span>24-hour deadline reminder</span>
       </label>
       <label class="notification-toggle">
         <input type="checkbox" name="deadline_passed" {% if preference.deadline_passed %}checked{% endif %} />
-        <span>Deadline passed - selections viewable</span>
+        <span>Selections revealed</span>
       </label>
       <label class="notification-toggle">
         <input type="checkbox" name="results_confirmed" {% if preference.results_confirmed %}checked{% endif %} />
-        <span>Results confirmed - new matchweek open</span>
+        <span>New gameweek open</span>
       </label>
-      <button type="submit" class="button">Save preferences</button>
+      <button type="submit" class="button">Update Notifications</button>
     </form>
   </div>
 
   <script>
-    const VAPID_PUBLIC_KEY = {{ vapid_public_key | tojson }};
+    (function () {
+      const VAPID_PUBLIC_KEY = {{ vapid_public_key | tojson }};
+      const SW_URL = {{ url_for('static', filename='sw.js') | tojson }};
+      const TOAST_TEXT = 'Preferences updated \u2713';
 
-    function urlBase64ToUint8Array(base64String) {
-      const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-      const rawData = window.atob(base64);
-      const outputArray = new Uint8Array(rawData.length);
-      for (let i = 0; i < rawData.length; i += 1) {
-        outputArray[i] = rawData.charCodeAt(i);
+      const statusEl = document.getElementById('push-status');
+      const iosInstructionsEl = document.getElementById('ios-instructions');
+      const deniedInstructionsEl = document.getElementById('denied-instructions');
+      const enableButton = document.getElementById('enable-push-button');
+      const disableButton = document.getElementById('disable-push-button');
+      const form = document.getElementById('notification-preferences-form');
+
+      function showToast() {
+        const toast = document.createElement('div');
+        toast.className = 'pick-toast';
+        toast.textContent = TOAST_TEXT;
+        document.body.appendChild(toast);
+        setTimeout(function () { toast.remove(); }, 1800);
       }
-      return outputArray;
-    }
 
-    function isIosDevice() {
-      return /iphone|ipad|ipod/i.test(window.navigator.userAgent);
-    }
+      // The "Update Notifications" form posts normally; turn its flash into the toast.
+      const savedFlash = Array.from(document.querySelectorAll('.flash.success'))
+        .find(function (flash) { return flash.textContent.trim() === TOAST_TEXT; });
+      if (savedFlash) {
+        savedFlash.remove();
+        showToast();
+      }
 
-    function isStandaloneDisplayMode() {
-      return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    }
-
-    const statusEl = document.getElementById('push-status');
-    const iosInstructionsEl = document.getElementById('ios-instructions');
-    const enableButton = document.getElementById('enable-push-button');
-
-    if (isIosDevice() && !isStandaloneDisplayMode()) {
-      iosInstructionsEl.style.display = 'block';
-    }
-
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-      statusEl.textContent = 'Push notifications are not supported in this browser.';
-      enableButton.disabled = true;
-    } else {
-      navigator.serviceWorker.register('/static/sw.js').then(function (registration) {
-        return registration.pushManager.getSubscription();
-      }).then(function (subscription) {
-        if (subscription) {
-          statusEl.textContent = 'Notifications are already enabled on this device.';
+      function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; i += 1) {
+          outputArray[i] = rawData.charCodeAt(i);
         }
-      }).catch(function () {
-        // Ignore - status will be set when the user clicks the button instead.
-      });
-    }
+        return outputArray;
+      }
 
-    enableButton.addEventListener('click', function () {
-      navigator.serviceWorker.register('/static/sw.js').then(function (registration) {
-        return Notification.requestPermission().then(function (permission) {
-          if (permission !== 'granted') {
-            statusEl.textContent = 'Notification permission was not granted.';
-            return null;
-          }
-          return registration.pushManager.getSubscription().then(function (existingSubscription) {
-            if (existingSubscription) {
-              return existingSubscription;
-            }
-            return registration.pushManager.subscribe({
-              userVisibleOnly: true,
-              applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-            });
-          });
-        });
-      }).then(function (subscription) {
-        if (!subscription) {
-          return null;
-        }
-        return fetch('/notifications/subscribe', {
+      function isIosDevice() {
+        return /iphone|ipad|ipod/i.test(window.navigator.userAgent)
+          || (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1);
+      }
+
+      function isStandaloneDisplayMode() {
+        return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+      }
+
+      function postJson(url, payload) {
+        return fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(subscription.toJSON()),
-        }).then(function () {
-          statusEl.textContent = 'Notifications enabled on this device.';
+          credentials: 'same-origin',
+          body: JSON.stringify(payload),
+        }).then(function (response) {
+          if (!response.ok) {
+            throw new Error('Server responded with ' + response.status);
+          }
+          return response.json();
         });
-      }).catch(function (err) {
-        statusEl.textContent = 'Could not enable notifications: ' + err.message;
+      }
+
+      function applyPreferences(preferences) {
+        Object.keys(preferences).forEach(function (name) {
+          const input = form.querySelector('input[name="' + name + '"]');
+          if (input) { input.checked = Boolean(preferences[name]); }
+        });
+      }
+
+      function setState(state, detail) {
+        enableButton.style.display = 'none';
+        disableButton.style.display = 'none';
+        iosInstructionsEl.style.display = 'none';
+        deniedInstructionsEl.style.display = 'none';
+        enableButton.disabled = false;
+
+        if (state === 'unsupported') {
+          statusEl.textContent = 'Push notifications are not supported in this browser.';
+        } else if (state === 'ios-install') {
+          statusEl.textContent = 'Install the app to your Home Screen to enable notifications.';
+          iosInstructionsEl.style.display = 'block';
+        } else if (state === 'denied') {
+          statusEl.textContent = 'Notifications are blocked on this device.';
+          deniedInstructionsEl.style.display = 'block';
+          enableButton.style.display = 'inline-block';
+          enableButton.disabled = true;
+        } else if (state === 'subscribed') {
+          statusEl.textContent = 'Notifications are enabled on this device.';
+          disableButton.style.display = 'inline-block';
+        } else if (state === 'unlinked') {
+          statusEl.textContent = 'This device has notifications switched on but they are not linked to your account yet.';
+          enableButton.style.display = 'inline-block';
+        } else if (state === 'error') {
+          statusEl.textContent = 'Could not enable notifications: ' + detail;
+          enableButton.style.display = 'inline-block';
+        } else {
+          statusEl.textContent = 'Notifications are not enabled on this device.';
+          enableButton.style.display = 'inline-block';
+        }
+      }
+
+      function supportsPush() {
+        return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+      }
+
+      function refreshStatus() {
+        if (!supportsPush()) {
+          setState(isIosDevice() && !isStandaloneDisplayMode() ? 'ios-install' : 'unsupported');
+          return;
+        }
+        if (isIosDevice() && !isStandaloneDisplayMode()) {
+          setState('ios-install');
+          return;
+        }
+        if (Notification.permission === 'denied') {
+          setState('denied');
+          return;
+        }
+        navigator.serviceWorker.register(SW_URL).then(function (registration) {
+          return registration.pushManager.getSubscription();
+        }).then(function (subscription) {
+          if (!subscription) {
+            setState('idle');
+            return null;
+          }
+          return postJson('/notifications/status', { endpoint: subscription.endpoint }).then(function (data) {
+            setState(data.subscribed ? 'subscribed' : 'unlinked');
+          });
+        }).catch(function () {
+          setState('idle');
+        });
+      }
+
+      enableButton.addEventListener('click', function () {
+        enableButton.disabled = true;
+        statusEl.textContent = 'Enabling notifications\u2026';
+        navigator.serviceWorker.register(SW_URL).then(function (registration) {
+          return Notification.requestPermission().then(function (permission) {
+            if (permission !== 'granted') {
+              throw new Error(permission === 'denied' ? 'permission denied' : 'permission not granted');
+            }
+            return navigator.serviceWorker.ready.then(function () {
+              return registration.pushManager.getSubscription();
+            }).then(function (existing) {
+              return existing || registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+              });
+            });
+          });
+        }).then(function (subscription) {
+          return postJson('/notifications/subscribe', subscription.toJSON());
+        }).then(function (data) {
+          applyPreferences(data.preferences || {});
+          setState('subscribed');
+          showToast();
+        }).catch(function (err) {
+          if (Notification.permission === 'denied') {
+            setState('denied');
+          } else {
+            setState('error', err && err.message ? err.message : 'unknown error');
+          }
+        });
       });
-    });
+
+      disableButton.addEventListener('click', function () {
+        disableButton.disabled = true;
+        navigator.serviceWorker.register(SW_URL).then(function (registration) {
+          return registration.pushManager.getSubscription();
+        }).then(function (subscription) {
+          if (!subscription) { return null; }
+          const endpoint = subscription.endpoint;
+          return subscription.unsubscribe().then(function () {
+            return postJson('/notifications/unsubscribe', { endpoint: endpoint });
+          });
+        }).then(function () {
+          disableButton.disabled = false;
+          setState('idle');
+        }).catch(function (err) {
+          disableButton.disabled = false;
+          statusEl.textContent = 'Could not disable notifications: ' + (err && err.message ? err.message : 'unknown error');
+        });
+      });
+
+      refreshStatus();
+    })();
   </script>
 {% endblock %}

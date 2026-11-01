@@ -242,7 +242,8 @@ button {
   box-shadow: none;
 }
 
-.button.disabled {
+.button.disabled,
+.button:disabled {
   opacity: 0.45;
   pointer-events: none;
 }
@@ -370,6 +371,18 @@ button {
 
 .notification-ios-note {
   margin-top: 0.6rem;
+}
+
+.notification-section-title {
+  font-size: 1.05rem;
+  margin: 0 0 0.6rem;
+}
+
+.notification-device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
 }
 
 .notification-preferences-form {
