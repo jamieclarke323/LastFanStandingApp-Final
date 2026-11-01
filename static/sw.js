@@ -54,8 +54,14 @@ self.addEventListener('notificationclick', function (event) {
       }
       const anyWindow = clientList.find(function (client) { return 'focus' in client; });
       if (anyWindow) {
+        // navigate() only works for pages this worker controls; otherwise open a fresh window.
         return anyWindow.focus().then(function (focused) {
-          return focused && 'navigate' in focused ? focused.navigate(targetUrl) : focused;
+          if (focused && 'navigate' in focused) {
+            return focused.navigate(targetUrl).catch(function () {
+              return self.clients.openWindow ? self.clients.openWindow(targetUrl) : focused;
+            });
+          }
+          return self.clients.openWindow ? self.clients.openWindow(targetUrl) : focused;
         });
       }
       if (self.clients.openWindow) {

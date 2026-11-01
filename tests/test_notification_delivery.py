@@ -241,6 +241,46 @@ def test_device_registered_after_the_event_does_not_get_old_notification(ctx, se
     assert new_device.id not in {d.subscription_id for d in _deliveries()}
 
 
+def test_push_requests_carry_a_ttl_and_timeout(ctx, sent):
+    user = _make_user()
+    _make_competition(user)
+    _subscribe(user)
+    _prefs(user, deadline_48h=True, deadline_passed=True)
+
+    check_and_send_deadline_notifications(now=IN_48H_WINDOW)
+    check_and_send_deadline_notifications(now=DEADLINE + timedelta(hours=1))
+
+    reminder, revealed = sent
+    assert reminder['ttl'] == 47 * 3600  # expires at the deadline
+    assert revealed['ttl'] == app_module.DEFAULT_PUSH_TTL_SECONDS
+    assert all(call['timeout'] == app_module.PUSH_REQUEST_TIMEOUT_SECONDS for call in sent)
+
+
+def test_rows_committed_before_sending_are_retried_if_the_run_crashes_mid_send(ctx, monkeypatch):
+    user = _make_user()
+    _make_competition(user)
+    _subscribe(user)
+    _prefs(user, deadline_48h=True)
+    attempts = []
+
+    def crash(**kwargs):
+        attempts.append(kwargs)
+        raise KeyboardInterrupt  # not caught by deliver_push: simulates the process dying
+
+    monkeypatch.setattr(app_module, 'webpush', crash)
+    with pytest.raises(KeyboardInterrupt):
+        check_and_send_deadline_notifications(now=IN_48H_WINDOW)
+    db.session.rollback()
+
+    delivery = _deliveries()[0]
+    assert (delivery.status, delivery.attempts) == ('pending', 0)
+
+    monkeypatch.setattr(app_module, 'webpush', lambda **kwargs: attempts.append(kwargs))
+    check_and_send_deadline_notifications(now=IN_48H_WINDOW + timedelta(hours=1))
+    assert _deliveries()[0].status == 'sent'
+    assert len(attempts) == 2
+
+
 def test_user_without_devices_is_logged_so_a_later_device_is_not_flooded(ctx, sent):
     user = _make_user()
     _make_competition(user)

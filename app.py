@@ -261,7 +261,7 @@ class NotificationDelivery(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     log_id = db.Column(db.Integer, db.ForeignKey("notification_log.id"), nullable=False, index=True)
     subscription_id = db.Column(db.Integer, db.ForeignKey("push_subscription.id"), nullable=False, index=True)
-    status = db.Column(db.String(10), nullable=False)  # sent | failed
+    status = db.Column(db.String(10), nullable=False)  # pending | sent | failed
     attempts = db.Column(db.Integer, nullable=False, default=0)
     last_error = db.Column(db.String(200), nullable=True)
     last_attempt_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -1115,7 +1115,18 @@ def build_notification_message(notification_type: str, competition: Competition,
     raise ValueError(f"Unknown notification type: {notification_type}")
 
 
-def deliver_push(subscription: "PushSubscription", title: str, body: str, url: str) -> tuple[str, str | None]:
+# How long the push service should hold a message for a device that is offline.
+DEFAULT_PUSH_TTL_SECONDS = 24 * 60 * 60
+PUSH_REQUEST_TIMEOUT_SECONDS = 10
+
+
+def deliver_push(
+    subscription: "PushSubscription",
+    title: str,
+    body: str,
+    url: str,
+    ttl: int = DEFAULT_PUSH_TTL_SECONDS,
+) -> tuple[str, str | None]:
     """Send one push message to one device.
 
     Returns ("sent", None), ("invalid", reason) when the push service says the
@@ -1131,6 +1142,8 @@ def deliver_push(subscription: "PushSubscription", title: str, body: str, url: s
             data=json.dumps({"title": title, "body": body, "url": url}),
             vapid_private_key=get_vapid_private_key_pem(),
             vapid_claims={"sub": VAPID_CLAIM_EMAIL},
+            ttl=max(60, int(ttl)),
+            timeout=PUSH_REQUEST_TIMEOUT_SECONDS,
         )
     except WebPushException as exc:
         status_code = exc.response.status_code if exc.response is not None else None
@@ -1142,12 +1155,12 @@ def deliver_push(subscription: "PushSubscription", title: str, body: str, url: s
     return "sent", None
 
 
-def send_push_notification(user: "User", title: str, body: str, url: str = "/") -> list[dict]:
+def send_push_notification(user: "User", title: str, body: str, url: str = "/", ttl: int = 60 * 60) -> list[dict]:
     """Send a one-off message to every device a user has registered (used by the admin
     test tool). Invalid subscriptions are removed. Returns one result per device."""
     results = []
     for subscription in PushSubscription.query.filter_by(user_id=user.id).all():
-        status, error = deliver_push(subscription, title, body, url)
+        status, error = deliver_push(subscription, title, body, url, ttl=ttl)
         results.append({"endpoint": subscription.endpoint, "status": status, "error": error})
         if status == "invalid":
             _delete_subscription(subscription)
@@ -1178,6 +1191,10 @@ def is_member_eligible_for_notification(
     return True
 
 
+def _delivery_is_retryable(delivery: "NotificationDelivery") -> bool:
+    return delivery.status in ("pending", "failed") and delivery.attempts < MAX_DELIVERY_ATTEMPTS
+
+
 def _send_notifications_for_type(
     competition: Competition,
     matchweek: int,
@@ -1185,6 +1202,7 @@ def _send_notifications_for_type(
     message: dict,
     deadline_at: datetime | None = None,
     now: datetime | None = None,
+    ttl: int = DEFAULT_PUSH_TTL_SECONDS,
 ) -> None:
     """Raise one notification event for every eligible member and deliver it to each of
     their devices, recording the outcome per device.
@@ -1193,6 +1211,12 @@ def _send_notifications_for_type(
     Re-running only retries devices whose earlier attempt failed transiently. If the
     matchweek deadline has moved since the event was raised, it is raised again for the
     new deadline.
+
+    Runs in three steps so SQLite is never write-locked while talking to push services:
+    1. decide who gets what and commit the log/delivery rows (status "pending"),
+    2. send to each device over the network,
+    3. record the outcomes in one short transaction.
+    A crash between 2 and 3 leaves rows "pending", which are retried on the next run.
     """
     current_time = now or datetime.utcnow()
 
@@ -1229,6 +1253,8 @@ def _send_notifications_for_type(
     for subscription in PushSubscription.query.filter(PushSubscription.user_id.in_(user_ids)).all():
         subscriptions_by_user.setdefault(subscription.user_id, []).append(subscription)
 
+    # Step 1: plan.
+    planned: list[tuple[NotificationDelivery, PushSubscription]] = []
     for member in members:
         preference = preferences_by_user.get(member.user_id)
         if preference is None or not getattr(preference, notification_type):
@@ -1242,11 +1268,7 @@ def _send_notifications_for_type(
             and log.deadline_at != deadline_at
         )
         if log is not None and not deadline_changed:
-            pending = [
-                delivery for delivery in deliveries_by_log.get(log.id, {}).values()
-                if delivery.status == "failed" and delivery.attempts < MAX_DELIVERY_ATTEMPTS
-            ]
-            if not pending:
+            if not any(_delivery_is_retryable(d) for d in deliveries_by_log.get(log.id, {}).values()):
                 continue
 
         if not is_member_eligible_for_notification(
@@ -1268,37 +1290,47 @@ def _send_notifications_for_type(
             logs_by_user[member.user_id] = log
             deliveries_by_log[log.id] = {}
         elif deadline_changed:
-            NotificationDelivery.query.filter_by(log_id=log.id).delete()
+            NotificationDelivery.query.filter_by(log_id=log.id).delete(synchronize_session=False)
             deliveries_by_log[log.id] = {}
             log.sent_at = current_time
             log.deadline_at = deadline_at
             db.session.flush()
 
         existing_deliveries = deliveries_by_log.setdefault(log.id, {})
-        for subscription in list(subscriptions_by_user.get(member.user_id, [])):
+        for subscription in subscriptions_by_user.get(member.user_id, []):
             delivery = existing_deliveries.get(subscription.id)
             if delivery is None:
                 # Devices registered after the event was raised don't get old notifications.
                 if subscription.created_at is not None and subscription.created_at > log.sent_at:
                     continue
-                delivery = NotificationDelivery(log_id=log.id, subscription_id=subscription.id, status="failed", attempts=0)
+                delivery = NotificationDelivery(
+                    log_id=log.id, subscription_id=subscription.id, status="pending", attempts=0,
+                )
                 db.session.add(delivery)
                 existing_deliveries[subscription.id] = delivery
-            elif delivery.status == "sent" or delivery.attempts >= MAX_DELIVERY_ATTEMPTS:
+            elif not _delivery_is_retryable(delivery):
                 continue
+            planned.append((delivery, subscription))
 
-            status, error = deliver_push(subscription, message["title"], message["body"], message["url"])
-            delivery.attempts += 1
-            delivery.last_attempt_at = current_time
-            delivery.last_error = error
-            if status == "sent":
-                delivery.status = "sent"
-            elif status == "invalid":
-                subscriptions_by_user[member.user_id].remove(subscription)
-                existing_deliveries.pop(subscription.id, None)
-                _delete_subscription(subscription)
-            else:
-                delivery.status = "failed"
+    db.session.commit()
+    if not planned:
+        return
+
+    # Step 2: network I/O with no open transaction.
+    outcomes = [
+        (delivery, subscription, *deliver_push(subscription, message["title"], message["body"], message["url"], ttl=ttl))
+        for delivery, subscription in planned
+    ]
+
+    # Step 3: record.
+    for delivery, subscription, status, error in outcomes:
+        if status == "invalid":
+            _delete_subscription(subscription)
+            continue
+        delivery.attempts += 1
+        delivery.last_attempt_at = current_time
+        delivery.last_error = error
+        delivery.status = "sent" if status == "sent" else "failed"
 
     db.session.commit()
 
@@ -1342,9 +1374,13 @@ def check_and_send_deadline_notifications(now: datetime | None = None) -> None:
                 continue
             for notification_type in due_types:
                 message = build_notification_message(notification_type, competition, matchweek)
+                # Reminders are useless after the deadline, so let the push service drop them then.
+                ttl = DEFAULT_PUSH_TTL_SECONDS
+                if notification_type in ("deadline_48h", "deadline_24h"):
+                    ttl = int((deadline - current_time).total_seconds())
                 _send_notifications_for_type(
                     competition, matchweek, notification_type, message,
-                    deadline_at=deadline, now=current_time,
+                    deadline_at=deadline, now=current_time, ttl=ttl,
                 )
 
 
